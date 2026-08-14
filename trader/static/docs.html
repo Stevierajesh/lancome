@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Trader — Documentation</title>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b24; --panel2: #1c2330; --border: #2a3242;
+    --text: #d7dde8; --muted: #7d8797; --green: #3fb27f; --red: #e05d5d;
+    --accent: #5b9dd9; --amber: #d9a53f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.65 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px;
+           background: var(--panel); border-bottom: 1px solid var(--border);
+           position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 16px; margin: 0; font-family: "SF Mono", Consolas, monospace; }
+  header nav a { color: var(--muted); text-decoration: none; margin-left: 14px; }
+  header nav a:hover, header nav a.active { color: var(--accent); }
+  .layout { display: grid; grid-template-columns: 220px 1fr; max-width: 1200px; margin: 0 auto; }
+  aside { padding: 24px 16px; position: sticky; top: 53px; height: fit-content; }
+  aside a { display: block; color: var(--muted); text-decoration: none; padding: 3px 0;
+            font-size: 13px; }
+  aside a:hover { color: var(--accent); }
+  main { padding: 24px 32px 80px; min-width: 0; }
+  h2 { border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-top: 48px;
+       scroll-margin-top: 70px; }
+  h3 { margin-top: 28px; color: var(--accent); }
+  code { background: var(--panel2); padding: 1px 6px; border-radius: 4px;
+         font: 13px "SF Mono", Consolas, monospace; }
+  pre { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+        padding: 14px; overflow-x: auto; font: 13px/1.5 "SF Mono", Consolas, monospace; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 12px 0; }
+  th { text-align: left; color: var(--muted); font-weight: 600; padding: 8px;
+       border-bottom: 1px solid var(--border); }
+  td { padding: 8px; border-bottom: 1px solid var(--panel2); }
+  td code { white-space: nowrap; }
+  .diagram { color: var(--accent); }
+  .warn { background: #3a2f1d; border: 1px solid #5a4a2d; border-radius: 8px;
+          padding: 12px 16px; color: var(--amber); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>📈 Paper Trader</h1>
+  <nav>
+    <a href="/">Dashboard</a>
+    <a href="/docs" class="active">Docs</a>
+  </nav>
+</header>
+<div class="layout">
+<aside>
+  <a href="#overview">Overview</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#tick">The Tick Cycle</a>
+  <a href="#signals">Signal Engine</a>
+  <a href="#judge">The LLM Judge</a>
+  <a href="#risk">Risk Limits</a>
+  <a href="#modules">Module Reference</a>
+  <a href="#config">Configuration</a>
+  <a href="#logs">Event Log Schema</a>
+  <a href="#api">Dashboard API</a>
+  <a href="#runbook">Runbook</a>
+</aside>
+<main>
+
+<h2 id="overview">Overview</h2>
+<p>This is a hybrid intraday <strong>paper-trading</strong> bot for Alpaca. "Hybrid" means the
+decision to trade passes through two independent layers plus a hard safety net:</p>
+<ol>
+  <li><strong>Rules propose</strong> — deterministic technical indicators (SMA crossover, RSI)
+      scan a watchlist every 5 minutes and emit candidate signals.</li>
+  <li><strong>The LLM judges</strong> — each candidate is sent to an LLM (via the
+      <code>codex</code> CLI, running on a ChatGPT subscription — zero per-token cost) which
+      approves or vetoes it with a confidence score.</li>
+  <li><strong>Risk caps everything</strong> — position sizing, position count, daily loss halt,
+      and per-position stop-loss/take-profit run regardless of what the first two layers say.</li>
+</ol>
+<div class="warn">⚠ Paper trading only. The broker client is constructed with
+<code>paper=True</code>; never point this at a live account.</div>
+
+<h2 id="architecture">Architecture</h2>
+<pre class="diagram">
+ ┌─────────────────────────  every 5 min (market hours)  ────────────────────────┐
+ │                                                                               │
+ │   Alpaca IEX feed          trader/signals.py            codex CLI             │
+ │  ┌───────────────┐  bars  ┌────────────────┐  Signal  ┌──────────────┐        │
+ │  │ trader/data.py│ ─────► │ SMA 9/21 cross │ ───────► │ trader/judge │        │
+ │  │  5-min bars   │        │ RSI 14 extremes│          │ approve/veto │        │
+ │  └───────────────┘        └────────────────┘          └──────┬───────┘        │
+ │                                                              │ approve ≥ 0.6  │
+ │                                                              ▼                │
+ │  ┌──────────────────┐   qty / deny   ┌───────────────────────────────┐        │
+ │  │  trader/risk.py  │ ◄────────────► │        trader/broker.py       │        │
+ │  │ sizing, caps,    │                │  Alpaca paper orders (market) │        │
+ │  │ SL/TP, daily halt│                └───────────────┬───────────────┘        │
+ │  └──────────────────┘                                │                        │
+ │                                                      ▼                        │
+ │                                        logs/trades.jsonl + trader.log        │
+ └───────────────────────────────────────────────────────────────────────────────┘
+                                                        │
+                                                        ▼
+                                    trader/dashboard.py (Flask) ── this UI
+</pre>
+
+<h2 id="tick">The Tick Cycle</h2>
+<p><code>trader/main.py</code> runs an infinite loop. Every <code>POLL_INTERVAL_SECONDS</code>
+(300s) during market hours it executes one <em>tick</em>:</p>
+<ol>
+  <li><strong>Snapshot</strong> — fetch account equity/cash and open positions from Alpaca.</li>
+  <li><strong>Hard exits first</strong> — every open position is checked against stop-loss
+      (−2%) and take-profit (+3%). These exits bypass the judge entirely: safety rules are
+      not up for debate.</li>
+  <li><strong>Fetch bars</strong> — last ~100 five-minute bars per watchlist symbol from the
+      free IEX feed.</li>
+  <li><strong>Evaluate signals</strong> — each symbol runs through the signal engine. Symbols
+      already held can only produce <em>sell</em> signals; unheld symbols only <em>buy</em>.</li>
+  <li><strong>Daily-loss gate</strong> — if equity is down ≥2% vs yesterday's close, all new
+      buys are skipped for the rest of the day.</li>
+  <li><strong>Judge</strong> — surviving signals go to the LLM with full context (bars,
+      indicators, portfolio). Only <code>approve</code> with confidence ≥ 0.6 proceeds.</li>
+  <li><strong>Size &amp; execute</strong> — buys are sized to ≤10% of equity (whole shares,
+      capped by cash); sells close the whole position. Market orders, day time-in-force.</li>
+  <li><strong>Record</strong> — every signal, verdict, entry, and exit is appended to
+      <code>logs/trades.jsonl</code>.</li>
+</ol>
+<p class="muted">Any exception inside a tick is caught and logged; the loop never dies
+mid-session. If the market is closed, the tick is skipped.</p>
+
+<h2 id="signals">Signal Engine</h2>
+<p><code>trader/signals.py</code> is intentionally simple and fully deterministic — the same
+bars always produce the same signal, which makes the judge's contribution measurable.</p>
+<h3>Indicators</h3>
+<table>
+  <tr><th>Indicator</th><th>Definition</th><th>Parameters</th></tr>
+  <tr><td>SMA fast</td><td>mean of last N closes</td><td>N = 9 bars (45 min)</td></tr>
+  <tr><td>SMA slow</td><td>mean of last N closes</td><td>N = 21 bars (105 min)</td></tr>
+  <tr><td>RSI</td><td>100 − 100/(1+RS), RS = avg gain / avg loss over N bars</td>
+      <td>N = 14, oversold &lt; 30, overbought &gt; 70</td></tr>
+</table>
+<h3>Rules</h3>
+<table>
+  <tr><th>Condition</th><th>Holding?</th><th>Signal</th></tr>
+  <tr><td>SMA fast crosses <em>above</em> slow (and RSI not overbought)</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> — momentum entry</td></tr>
+  <tr><td>RSI drops below 30</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> — mean-reversion entry</td></tr>
+  <tr><td>SMA fast crosses <em>below</em> slow</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> — momentum faded</td></tr>
+  <tr><td>RSI rises above 70</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> — take the froth</td></tr>
+</table>
+<p>A "cross" requires the relationship to have flipped between the previous bar and the
+current bar — a fast SMA merely <em>being</em> above the slow one is not a signal, which
+prevents re-firing every tick during a trend.</p>
+
+<h2 id="judge">The LLM Judge</h2>
+<p><code>trader/judge.py</code> plays devil's advocate. It receives every candidate signal and
+is prompted to be <em>skeptical</em> — veto anything that looks weak, choppy, or contradicted
+by recent price action.</p>
+<h3>How it's invoked</h3>
+<pre><code>codex exec \
+  --sandbox read-only \          # judge cannot run commands or write files
+  --skip-git-repo-check \
+  --ephemeral \                  # no session state saved
+  --ignore-user-config \         # avoids a retired model pinned in ~/.codex/config.toml
+  --output-schema judge_schema.json \
+  --output-last-message /tmp/&lt;file&gt; \
+  "&lt;prompt&gt;"</code></pre>
+<p>Because this goes through the <code>codex</code> CLI's ChatGPT-subscription auth, judge
+calls cost <strong>no API credits</strong>. A call takes ~15–60s, which is fine at a 5-minute
+cadence, and the judge only runs when a rule actually fires — most ticks make zero LLM calls.</p>
+<h3>The contract</h3>
+<p><code>--output-schema</code> forces the reply to match <code>trader/judge_schema.json</code>:</p>
+<pre><code>{ "decision": "approve" | "veto", "confidence": 0.0–1.0, "reason": "one sentence" }</code></pre>
+<p>The prompt includes the proposed trade, the rule that fired, current indicator values, the
+last 40 bars, and the account/positions snapshot.</p>
+<h3>Fail-safe</h3>
+<p>Timeout (120s), non-zero exit code, malformed JSON, or an illegal decision value all
+resolve to <code>veto</code> with confidence 0. A broken judge can never cause a trade —
+it can only prevent them. Set <code>JUDGE_ENABLED = False</code> in config to run a
+rules-only baseline for comparison.</p>
+
+<h2 id="risk">Risk Limits</h2>
+<table>
+  <tr><th>Limit</th><th>Value</th><th>Enforced in</th><th>Notes</th></tr>
+  <tr><td>Max position size</td><td>10% of equity</td><td><code>risk.size_entry</code></td>
+      <td>whole shares, additionally capped by available cash</td></tr>
+  <tr><td>Max open positions</td><td>4</td><td><code>risk.size_entry</code></td>
+      <td>new entries denied at the cap</td></tr>
+  <tr><td>Daily loss halt</td><td>−2% vs prior close</td><td><code>risk.daily_loss_breached</code></td>
+      <td>blocks new entries; exits still allowed</td></tr>
+  <tr><td>Stop-loss</td><td>−2% per position</td><td><code>risk.exit_reason</code></td>
+      <td>checked first every tick, no judge involved</td></tr>
+  <tr><td>Take-profit</td><td>+3% per position</td><td><code>risk.exit_reason</code></td>
+      <td>same</td></tr>
+</table>
+
+<h2 id="modules">Module Reference</h2>
+<table>
+  <tr><th>File</th><th>Responsibility</th></tr>
+  <tr><td><code>trader/config.py</code></td><td>All tunables: watchlist, indicator periods, risk caps, judge settings. Loads <code>.env</code>.</td></tr>
+  <tr><td><code>trader/data.py</code></td><td>Historical 5-min bars via <code>StockHistoricalDataClient</code> (IEX feed).</td></tr>
+  <tr><td><code>trader/signals.py</code></td><td>Pure functions: SMA, RSI, <code>evaluate()</code> → <code>Signal | None</code>.</td></tr>
+  <tr><td><code>trader/judge.py</code></td><td>Prompt building, <code>codex exec</code> subprocess, verdict parsing, fail-safe.</td></tr>
+  <tr><td><code>trader/judge_schema.json</code></td><td>JSON Schema constraining the judge's reply.</td></tr>
+  <tr><td><code>trader/risk.py</code></td><td>Sizing, caps, daily halt, stop-loss/take-profit checks.</td></tr>
+  <tr><td><code>trader/broker.py</code></td><td>Alpaca <code>TradingClient</code> wrapper (paper): account, positions, orders, clock.</td></tr>
+  <tr><td><code>trader/main.py</code></td><td>The tick loop; structured event recording.</td></tr>
+  <tr><td><code>trader/dashboard.py</code></td><td>This Flask app: static pages + JSON APIs over the event log and Alpaca.</td></tr>
+</table>
+
+<h2 id="config">Configuration</h2>
+<p>Everything lives in <code>trader/config.py</code>:</p>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>WATCHLIST</code></td><td>SPY, QQQ, AAPL, NVDA, TSLA, AMD, MSFT, AMZN</td><td>symbols scanned each tick</td></tr>
+  <tr><td><code>POLL_INTERVAL_SECONDS</code></td><td>300</td><td>tick cadence</td></tr>
+  <tr><td><code>BAR_TIMEFRAME_MINUTES</code></td><td>5</td><td>bar size</td></tr>
+  <tr><td><code>LOOKBACK_BARS</code></td><td>100</td><td>bars kept per symbol</td></tr>
+  <tr><td><code>SMA_FAST / SMA_SLOW</code></td><td>9 / 21</td><td>crossover periods</td></tr>
+  <tr><td><code>RSI_PERIOD</code></td><td>14</td><td>RSI window</td></tr>
+  <tr><td><code>RSI_OVERSOLD / RSI_OVERBOUGHT</code></td><td>30 / 70</td><td>RSI thresholds</td></tr>
+  <tr><td><code>MAX_POSITION_PCT</code></td><td>0.10</td><td>per-position equity cap</td></tr>
+  <tr><td><code>MAX_OPEN_POSITIONS</code></td><td>4</td><td>portfolio breadth cap</td></tr>
+  <tr><td><code>DAILY_LOSS_LIMIT_PCT</code></td><td>0.02</td><td>entry halt threshold</td></tr>
+  <tr><td><code>STOP_LOSS_PCT / TAKE_PROFIT_PCT</code></td><td>0.02 / 0.03</td><td>per-position exits</td></tr>
+  <tr><td><code>JUDGE_ENABLED</code></td><td>True</td><td>set False for rules-only baseline</td></tr>
+  <tr><td><code>JUDGE_TIMEOUT_SECONDS</code></td><td>120</td><td>codex call timeout</td></tr>
+  <tr><td><code>JUDGE_MIN_CONFIDENCE</code></td><td>0.6</td><td>approvals below this are ignored</td></tr>
+</table>
+<p>Secrets go in <code>.env</code> (git-ignored): <code>ALPACA_API_KEY</code>,
+<code>ALPACA_SECRET_KEY</code> — paper keys only.</p>
+
+<h2 id="logs">Event Log Schema</h2>
+<p><code>logs/trades.jsonl</code> is append-only, one JSON object per line, each with a
+<code>ts</code> (UTC ISO 8601) and an <code>event</code> discriminator:</p>
+<h3><code>signal</code> — a rule fired and the judge ruled on it</h3>
+<pre><code>{"event": "signal", "symbol": "NVDA", "side": "buy",
+ "rule": "SMA fast crossed above slow",
+ "indicators": {"price": 512.3, "sma_fast": 511.8, "sma_slow": 511.2, "rsi": 58.1},
+ "verdict": {"decision": "approve", "confidence": 0.78, "reason": "…"},
+ "ts": "2026-08-14T15:05:12+00:00"}</code></pre>
+<h3><code>entry</code> — an approved buy was submitted</h3>
+<pre><code>{"event": "entry", "symbol": "NVDA", "qty": 19, "price": 512.3,
+ "rule": "SMA fast crossed above slow", "ts": "…"}</code></pre>
+<h3><code>exit</code> — a position was closed</h3>
+<pre><code>{"event": "exit", "symbol": "NVDA", "reason": "take-profit (3.12%)",
+ "position": {"qty": 19, "avg_entry_price": 512.3, "current_price": 528.3,
+              "unrealized_plpc": 0.0312, "market_value": 10037.7}, "ts": "…"}</code></pre>
+<p class="muted">Every judged signal is logged whether approved or vetoed — vetoes are the
+interesting data for evaluating whether the judge adds value over raw rules.</p>
+
+<h2 id="api">Dashboard API</h2>
+<table>
+  <tr><th>Endpoint</th><th>Params</th><th>Returns</th></tr>
+  <tr><td><code>GET /api/events</code></td>
+      <td><code>symbol</code>, <code>event</code>, <code>decision</code>,
+          <code>q</code> (substring search), <code>since</code>/<code>until</code> (ISO ts),
+          <code>limit</code> (≤1000), <code>offset</code></td>
+      <td>filtered events newest-first, total count, known symbols</td></tr>
+  <tr><td><code>GET /api/summary</code></td><td>—</td>
+      <td>account (equity/cash/prior close), open positions, derived stats
+          (signal count, approval rate, avg confidence, entries/exits)</td></tr>
+  <tr><td><code>GET /api/history</code></td>
+      <td><code>period</code> (1D/1W/1M/3M/1A), <code>timeframe</code> (5Min/1H/1D)</td>
+      <td>Alpaca portfolio history: timestamps, equity series, P/L series, base value</td></tr>
+</table>
+<p>Filtering and pagination happen server-side, so the browser only ever holds one page of
+events regardless of log size.</p>
+
+<h2 id="runbook">Runbook</h2>
+<pre><code># one-time setup
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # paste Alpaca PAPER keys
+
+# terminal 1 — the bot
+python -m trader.main
+
+# terminal 2 — this dashboard
+python -m trader.dashboard   # → http://localhost:8600</code></pre>
+<h3>Troubleshooting</h3>
+<table>
+  <tr><th>Symptom</th><th>Likely cause</th></tr>
+  <tr><td>Dashboard shows "Alpaca unavailable"</td><td>missing/invalid keys in <code>.env</code>;
+      the event feed still works from local logs</td></tr>
+  <tr><td>Every verdict is <code>judge error (codex failed)</code></td>
+      <td>codex CLI logged out or model config issue — run
+          <code>codex exec --ignore-user-config "say OK"</code> manually to check</td></tr>
+  <tr><td>No signals for hours</td><td>normal in flat markets; crossovers are rare by design</td></tr>
+  <tr><td>Bars look different from your charting app</td>
+      <td>free IEX feed has thinner volume than the paid SIP feed</td></tr>
+</table>
+
+</main>
+</div>
+</body>
+</html>
