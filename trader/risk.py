@@ -18,16 +18,29 @@ def daily_loss_breached(account: dict) -> bool:
     return False
 
 
-def size_entry(account: dict, positions: dict, price: float) -> int | None:
-    """Return share qty for a new entry, or None if not allowed."""
+def _entry_budget(account: dict, positions: dict) -> float | None:
     if len(positions) >= config.MAX_OPEN_POSITIONS:
         log.info("max open positions reached (%d)", config.MAX_OPEN_POSITIONS)
         return None
     budget = account["equity"] * config.MAX_POSITION_PCT
-    if budget > account["cash"]:
-        budget = account["cash"]
+    return min(budget, account["cash"])
+
+
+def size_entry(account: dict, positions: dict, price: float) -> int | None:
+    """Return share qty for a new stock entry, or None if not allowed."""
+    budget = _entry_budget(account, positions)
+    if budget is None:
+        return None
     qty = math.floor(budget / price)
     return qty if qty >= 1 else None
+
+
+def size_entry_notional(account: dict, positions: dict) -> float | None:
+    """Return dollar amount for a new crypto entry, or None if not allowed."""
+    budget = _entry_budget(account, positions)
+    if budget is None or budget < 10:  # skip dust orders
+        return None
+    return budget
 
 
 def exit_reason(position: dict) -> str | None:

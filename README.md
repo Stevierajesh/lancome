@@ -8,7 +8,7 @@ per-token API cost) approves or vetoes them, and hard risk limits cap everything
 
 ## How it works
 
-Every 5 minutes during market hours:
+Every 5 minutes (crypto pairs 24/7; stocks only during market hours):
 
 1. Stop-loss (-2%) / take-profit (+3%) exits on open positions (no judge).
 2. Fetch 5-min bars (free IEX feed) for the watchlist.

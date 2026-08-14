@@ -73,7 +73,10 @@
 decision to trade passes through two independent layers plus a hard safety net:</p>
 <ol>
   <li><strong>Rules propose</strong> — deterministic technical indicators (SMA crossover, RSI)
-      scan a watchlist every 5 minutes and emit candidate signals.</li>
+      scan a watchlist every 5 minutes and emit candidate signals. Crypto pairs are scanned
+      24/7; stocks only while the market is open. Crypto entries are notional (dollar-amount,
+      GTC) orders; stock entries are whole-share DAY orders. Note: position symbols drop the
+      slash (<code>BTC/USD</code> → <code>BTCUSD</code>).</li>
   <li><strong>The LLM judges</strong> — each candidate is sent to an LLM (via the
       <code>codex</code> CLI, running on a ChatGPT subscription — zero per-token cost) which
       approves or vetoes it with a confidence score.</li>
@@ -218,7 +221,8 @@ rules-only baseline for comparison.</p>
 <p>Everything lives in <code>trader/config.py</code>:</p>
 <table>
   <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
-  <tr><td><code>WATCHLIST</code></td><td>SPY, QQQ, AAPL, NVDA, TSLA, AMD, MSFT, AMZN</td><td>symbols scanned each tick</td></tr>
+  <tr><td><code>WATCHLIST</code></td><td>SPY, QQQ, AAPL, NVDA, TSLA, AMD, MSFT, AMZN</td><td>stock symbols, scanned while the market is open</td></tr>
+  <tr><td><code>CRYPTO_WATCHLIST</code></td><td>BTC/USD, ETH/USD, SOL/USD, DOGE/USD</td><td>crypto pairs, scanned 24/7</td></tr>
   <tr><td><code>POLL_INTERVAL_SECONDS</code></td><td>300</td><td>tick cadence</td></tr>
   <tr><td><code>BAR_TIMEFRAME_MINUTES</code></td><td>5</td><td>bar size</td></tr>
   <tr><td><code>LOOKBACK_BARS</code></td><td>100</td><td>bars kept per symbol</td></tr>

@@ -10,6 +10,10 @@ ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 # Liquid, high-volume names so 5-min bars are meaningful
 WATCHLIST = ["SPY", "QQQ", "AAPL", "NVDA", "TSLA", "AMD", "MSFT", "AMZN"]
 
+# Crypto trades 24/7 on Alpaca. Data/order symbols use a slash ("BTC/USD");
+# position symbols drop it ("BTCUSD").
+CRYPTO_WATCHLIST = ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"]
+
 POLL_INTERVAL_SECONDS = 300          # 5 minutes
 BAR_TIMEFRAME_MINUTES = 5
 LOOKBACK_BARS = 100                  # ~1.5 trading days of 5-min bars

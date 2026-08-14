@@ -19,7 +19,12 @@
   header h1 { font-size: 16px; margin: 0; }
   header nav a { color: var(--muted); text-decoration: none; margin-left: 14px; }
   header nav a:hover, header nav a.active { color: var(--accent); }
-  #refresh-info { margin-left: auto; color: var(--muted); font-size: 12px; }
+  #refresh-info { color: var(--muted); font-size: 12px; }
+  #bot-timer .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                    margin-right: 6px; vertical-align: middle; }
+  #bot-timer .dot.on { background: var(--green); }
+  #bot-timer .dot.off { background: var(--red); }
+  #bot-timer .count { color: var(--accent); }
   main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
            gap: 12px; margin-bottom: 20px; }
@@ -75,7 +80,8 @@
     <a href="/" class="active">Dashboard</a>
     <a href="/docs">Docs</a>
   </nav>
-  <span id="refresh-info"></span>
+  <span id="bot-timer" style="margin-left:auto; font-size:13px;"></span>
+  <span id="refresh-info" style="margin-left:16px;"></span>
 </header>
 <main>
   <div id="alpaca-error"></div>
@@ -149,9 +155,32 @@ function card(label, value, klass = "") {
           <div class="value ${klass}">${value}</div></div>`;
 }
 
+let botStatus = null;
+
+function renderBotTimer() {
+  const el = $("bot-timer");
+  if (!botStatus) { el.innerHTML = '<span class="dot off"></span>bot: no heartbeat yet'; return; }
+  const next = new Date(botStatus.next_tick).getTime();
+  const remaining = Math.round((next - Date.now()) / 1000);
+  const grace = 90; // seconds past next_tick before we call it offline
+  if (remaining < -grace) {
+    const last = fmtTime(botStatus.last_tick);
+    el.innerHTML = `<span class="dot off"></span>bot offline? last tick ${last}`;
+  } else if (remaining <= 0) {
+    el.innerHTML = `<span class="dot on"></span>bot ticking now…`;
+  } else {
+    const m = Math.floor(remaining / 60), sec = String(remaining % 60).padStart(2, "0");
+    el.innerHTML = `<span class="dot on"></span>next tick in <span class="count">${m}:${sec}</span>` +
+      (botStatus.stocks_open ? "" : ' <span style="color:var(--muted)">(crypto only)</span>');
+  }
+}
+setInterval(renderBotTimer, 1000);
+
 async function loadSummary() {
   const s = await (await fetch("/api/summary")).json();
   const a = s.account, st = s.stats;
+  botStatus = s.bot;
+  renderBotTimer();
   const err = $("alpaca-error");
   if (s.error) { err.style.display = "block";
     err.textContent = "⚠ Alpaca unavailable (stats limited to local logs): " + s.error;

@@ -21,6 +21,7 @@ log = logging.getLogger("dashboard")
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 TRADES_FILE = os.path.join(config.LOG_DIR, "trades.jsonl")
+STATUS_FILE = os.path.join(config.LOG_DIR, "status.json")
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 
@@ -120,7 +121,15 @@ def api_summary():
             sum((e.get("verdict") or {}).get("confidence", 0) for e in signals) / len(signals), 3
         ) if signals else None,
     }
-    return jsonify({"account": account, "positions": positions, "stats": stats, "error": error})
+    bot = None
+    if os.path.exists(STATUS_FILE):
+        try:
+            with open(STATUS_FILE) as f:
+                bot = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return jsonify({"account": account, "positions": positions, "stats": stats,
+                    "bot": bot, "error": error})
 
 
 @app.get("/api/history")

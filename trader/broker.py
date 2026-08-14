@@ -58,6 +58,19 @@ def submit_market_order(symbol: str, side: str, qty: float):
     return result
 
 
+def submit_crypto_order(symbol: str, side: str, notional: float):
+    """Crypto market order by dollar amount. Requires GTC (DAY is rejected)."""
+    order = MarketOrderRequest(
+        symbol=symbol,
+        notional=round(notional, 2),
+        side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+        time_in_force=TimeInForce.GTC,
+    )
+    result = get_client().submit_order(order_data=order)
+    log.info("submitted %s %s $%.2f (order %s)", side, symbol, notional, result.id)
+    return result
+
+
 def close_position(symbol: str):
     result = get_client().close_position(symbol)
     log.info("closed position %s", symbol)
