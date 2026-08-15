@@ -36,5 +36,19 @@ TAKE_PROFIT_PCT = 0.03               # exit position at +3%
 JUDGE_ENABLED = True
 JUDGE_TIMEOUT_SECONDS = 120
 JUDGE_MIN_CONFIDENCE = 0.6
+JUDGE_BACKEND = os.environ.get("JUDGE_BACKEND", "codex")   # "codex", "ollama", "none"
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+
+# Scanner
+SCANNER_INTERVAL_SECONDS = 120       # poll screener every 2 minutes
+SCANNER_TOP_ACTIVES = 20
+SCANNER_TOP_MOVERS = 10
+SCANNER_WATCHLIST_MAX = 25
+SCANNER_ENTRY_TTL_SECONDS = 1800     # drop symbols after 30 min of no activity
+
+# News
+NEWS_STREAM_ENABLED = True
+NEWS_LOOKBACK_ARTICLES = 5
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")

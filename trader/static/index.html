@@ -56,6 +56,8 @@
   .badge.entry   { background: #1d3a2d; color: var(--green); }
   .badge.exit    { background: #3a1d1d; color: var(--red); }
   .badge.signal  { background: #1d2b3a; color: var(--accent); }
+  .badge.news    { background: #2d1d3a; color: #b39ddb; }
+  .badge.scanner { background: #1d3a3a; color: #4dd0e1; }
   .badge.approve { background: #1d3a2d; color: var(--green); }
   .badge.veto    { background: #3a2f1d; color: var(--amber); }
   .reason { color: var(--muted); font-size: 12px; }
@@ -107,6 +109,17 @@
     </section>
   </div>
 
+  <div class="grid2">
+    <section>
+      <h2>Dynamic Watchlist <span id="watchlist-count" style="color:var(--muted); font-size:11px"></span></h2>
+      <div id="watchlist"></div>
+    </section>
+    <section>
+      <h2>Recent News</h2>
+      <div id="news-feed"></div>
+    </section>
+  </div>
+
   <section>
     <h2>Event Feed</h2>
     <div class="filters">
@@ -116,6 +129,8 @@
         <option value="signal">signal</option>
         <option value="entry">entry</option>
         <option value="exit">exit</option>
+        <option value="news">news</option>
+        <option value="scanner">scanner</option>
       </select>
       <select id="f-decision">
         <option value="">All verdicts</option>
@@ -195,7 +210,9 @@ async function loadSummary() {
     card("Signals", st.signals) +
     card("Approval rate", st.approval_rate == null ? "—" : (st.approval_rate * 100).toFixed(0) + "%") +
     card("Avg confidence", st.avg_confidence ?? "—") +
-    card("Entries / Exits", `${st.entries} / ${st.exits}`);
+    card("Entries / Exits", `${st.entries} / ${st.exits}`) +
+    card("News events", st.news_events ?? 0) +
+    card("Scanner hits", st.scanner_discoveries ?? 0);
 
   const posDiv = $("positions");
   const entries = Object.entries(s.positions || {});
@@ -233,6 +250,12 @@ function eventRow(e) {
       <span class="reason">${esc(JSON.stringify(e.indicators))}</span>`;
   } else if (e.event === "entry") {
     detail = `bought ${e.qty} @ ${fmtUsd(e.price)}<br><span class="reason">${esc(e.rule)}</span>`;
+  } else if (e.event === "news") {
+    detail = `<span class="reason">${esc(e.headline)}</span>`;
+  } else if (e.event === "scanner") {
+    const meta = e.scanner_meta || {};
+    const pct = meta.pct_change != null ? ` (${meta.pct_change > 0 ? "+" : ""}${meta.pct_change.toFixed(1)}%)` : "";
+    detail = `discovered${pct}`;
   } else if (e.event === "exit") {
     const pl = e.position?.unrealized_plpc;
     detail = `${esc(e.reason)}` + (pl != null ?
@@ -273,8 +296,39 @@ async function loadEvents() {
   $("pg-next").disabled = offset + PAGE_SIZE >= total;
 }
 
+async function loadScanner() {
+  try {
+    const d = await (await fetch("/api/scanner")).json();
+    const wl = d.watchlist || [];
+    $("watchlist-count").textContent = wl.length ? `(${wl.length} symbols)` : "";
+    if (!wl.length) { $("watchlist").innerHTML = '<div class="empty">Scanner idle</div>'; return; }
+    $("watchlist").innerHTML = `<table><tr><th>Sym</th><th>Source</th><th>Score</th><th>Info</th></tr>` +
+      wl.map((w) => {
+        const meta = w.scanner_meta || {};
+        const pct = meta.pct_change != null ? `${meta.pct_change > 0 ? "+" : ""}${meta.pct_change.toFixed(1)}%` : "";
+        const info = [pct, meta.volume ? `vol ${meta.volume.toLocaleString()}` : ""].filter(Boolean).join(", ");
+        return `<tr><td>${esc(w.symbol)}</td><td><span class="badge ${esc(w.source)}">${esc(w.source)}</span></td>
+          <td>${w.score}</td><td class="reason">${esc(info)}</td></tr>`;
+      }).join("") + "</table>";
+  } catch(e) { $("watchlist").innerHTML = '<div class="empty">Scanner unavailable</div>'; }
+}
+
+async function loadNews() {
+  try {
+    const d = await (await fetch("/api/news?limit=15")).json();
+    const items = d.events || [];
+    if (!items.length) { $("news-feed").innerHTML = '<div class="empty">No news yet</div>'; return; }
+    $("news-feed").innerHTML = items.map((n) =>
+      `<div style="padding:4px 0; border-bottom:1px solid var(--panel2)">
+        <span style="color:var(--accent)">${esc(n.symbol)}</span>
+        <span class="reason">${esc(n.headline)}</span>
+        <div style="font-size:11px; color:var(--muted)">${fmtTime(n.created_at || n.ts)}</div>
+      </div>`).join("");
+  } catch(e) { $("news-feed").innerHTML = '<div class="empty">News unavailable</div>'; }
+}
+
 function refreshAll() {
-  loadSummary(); loadHistory(); loadEvents();
+  loadSummary(); loadHistory(); loadEvents(); loadScanner(); loadNews();
   $("refresh-info").textContent = "updated " + new Date().toLocaleTimeString();
 }
 

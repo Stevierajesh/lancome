@@ -22,6 +22,7 @@ log = logging.getLogger("dashboard")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 TRADES_FILE = os.path.join(config.LOG_DIR, "trades.jsonl")
 STATUS_FILE = os.path.join(config.LOG_DIR, "status.json")
+SCANNER_FILE = os.path.join(config.LOG_DIR, "scanner.json")
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 
@@ -128,8 +129,40 @@ def api_summary():
                 bot = json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
+    # Scanner stats
+    news_events = [e for e in events if e.get("event") == "news"]
+    scanner_events = [e for e in events if e.get("event") == "scanner"]
+    stats["news_events"] = len(news_events)
+    stats["scanner_discoveries"] = len(scanner_events)
+    stats["news_symbols"] = len({e["symbol"] for e in news_events if e.get("symbol")})
+
     return jsonify({"account": account, "positions": positions, "stats": stats,
                     "bot": bot, "error": error})
+
+
+@app.get("/api/scanner")
+def api_scanner():
+    """Current dynamic watchlist from the scanner."""
+    if not os.path.exists(SCANNER_FILE):
+        return jsonify({"watchlist": [], "updated_at": None})
+    try:
+        with open(SCANNER_FILE) as f:
+            return jsonify(json.load(f))
+    except (json.JSONDecodeError, OSError):
+        return jsonify({"watchlist": [], "updated_at": None})
+
+
+@app.get("/api/news")
+def api_news():
+    """Recent news events (newest first)."""
+    limit = min(int(request.args.get("limit", 50)), 200)
+    symbol = request.args.get("symbol", "").upper()
+    events = load_events()
+    events.reverse()
+    news = [e for e in events if e.get("event") == "news"]
+    if symbol:
+        news = [e for e in news if e.get("symbol", "").upper() == symbol]
+    return jsonify({"total": len(news), "events": news[:limit]})
 
 
 @app.get("/api/history")
