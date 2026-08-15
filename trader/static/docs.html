@@ -46,7 +46,7 @@
 </head>
 <body>
 <header>
-  <h1>📈 Paper Trader</h1>
+  <h1>lancome</h1>
   <nav>
     <a href="/">Dashboard</a>
     <a href="/docs" class="active">Docs</a>
@@ -56,8 +56,11 @@
 <aside>
   <a href="#overview">Overview</a>
   <a href="#architecture">Architecture</a>
+  <a href="#scanner">Market Scanner</a>
+  <a href="#news">News Stream</a>
   <a href="#tick">The Tick Cycle</a>
   <a href="#signals">Signal Engine</a>
+  <a href="#enrichment">Enrichment</a>
   <a href="#judge">The LLM Judge</a>
   <a href="#risk">Risk Limits</a>
   <a href="#modules">Module Reference</a>
@@ -69,124 +72,172 @@
 <main>
 
 <h2 id="overview">Overview</h2>
-<p>This is a hybrid intraday <strong>paper-trading</strong> bot for Alpaca. "Hybrid" means the
-decision to trade passes through two independent layers plus a hard safety net:</p>
+<p>This is an event-driven intraday <strong>paper-trading</strong> bot for Alpaca. It combines
+three information sources to make trading decisions:</p>
 <ol>
-  <li><strong>Rules propose</strong> — deterministic technical indicators (SMA crossover, RSI)
-      scan a watchlist every 5 minutes and emit candidate signals. Crypto pairs are scanned
-      24/7; stocks only while the market is open. Crypto entries are notional (dollar-amount,
-      GTC) orders; stock entries are whole-share DAY orders. Note: position symbols drop the
-      slash (<code>BTC/USD</code> → <code>BTCUSD</code>).</li>
-  <li><strong>The LLM judges</strong> — each candidate is sent to an LLM (via the
-      <code>codex</code> CLI, running on a ChatGPT subscription — zero per-token cost) which
-      approves or vetoes it with a confidence score.</li>
-  <li><strong>Risk caps everything</strong> — position sizing, position count, daily loss halt,
-      and per-position stop-loss/take-profit run regardless of what the first two layers say.</li>
+  <li><strong>Market scanner</strong> — polls Alpaca's screener for top movers and most active
+      stocks, dynamically building a watchlist instead of relying on hardcoded tickers.</li>
+  <li><strong>News stream</strong> — real-time WebSocket feed of Benzinga headlines. Symbols
+      mentioned in news are added to the watchlist; news on held positions triggers immediate
+      re-evaluation.</li>
+  <li><strong>Technical signals</strong> — SMA crossover and RSI on 5-minute bars, same as before
+      but now applied to the dynamic watchlist.</li>
 </ol>
-<div class="warn">⚠ Paper trading only. The broker client is constructed with
+<p>When a signal fires, an <strong>enrichment</strong> step assembles a case file (bars + news +
+scanner context + portfolio state) and sends it to an <strong>LLM judge</strong> that approves
+or vetoes with a confidence score. <strong>Risk limits</strong> cap everything regardless.</p>
+<div class="warn">Paper trading only. The broker client is constructed with
 <code>paper=True</code>; never point this at a live account.</div>
 
 <h2 id="architecture">Architecture</h2>
 <pre class="diagram">
- ┌─────────────────────────  every 5 min (market hours)  ────────────────────────┐
- │                                                                               │
- │   Alpaca IEX feed          trader/signals.py            codex CLI             │
- │  ┌───────────────┐  bars  ┌────────────────┐  Signal  ┌──────────────┐        │
- │  │ trader/data.py│ ─────► │ SMA 9/21 cross │ ───────► │ trader/judge │        │
- │  │  5-min bars   │        │ RSI 14 extremes│          │ approve/veto │        │
- │  └───────────────┘        └────────────────┘          └──────┬───────┘        │
- │                                                              │ approve ≥ 0.6  │
- │                                                              ▼                │
- │  ┌──────────────────┐   qty / deny   ┌───────────────────────────────┐        │
- │  │  trader/risk.py  │ ◄────────────► │        trader/broker.py       │        │
- │  │ sizing, caps,    │                │  Alpaca paper orders (market) │        │
- │  │ SL/TP, daily halt│                └───────────────┬───────────────┘        │
- │  └──────────────────┘                                │                        │
- │                                                      ▼                        │
- │                                        logs/trades.jsonl + trader.log        │
- └───────────────────────────────────────────────────────────────────────────────┘
-                                                        │
-                                                        ▼
-                                    trader/dashboard.py (Flask) ── this UI
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │                        EVENT-DRIVEN MAIN LOOP                           │
+ │                                                                         │
+ │  ┌─────────────────┐                                                    │
+ │  │  News WebSocket  │──news events──┐                                   │
+ │  │  (daemon thread) │               │                                   │
+ │  └─────────────────┘               ▼                                   │
+ │                              ┌──────────┐                               │
+ │  ┌─────────────────┐         │  Event   │                               │
+ │  │  Scanner poll    │──hits──►│  Queue   │──► process_event()            │
+ │  │  (every 2 min)   │         │          │        │                      │
+ │  └─────────────────┘         └──────────┘        ▼                      │
+ │                                           ┌─────────────┐               │
+ │  ┌─────────────────┐                      │ Enrichment  │               │
+ │  │  Tick timers     │──────────────────►  │ bars + news  │               │
+ │  │  crypto: 5 min   │   (signals.py)      │ + portfolio  │               │
+ │  │  stocks: 5 min   │                      └──────┬──────┘               │
+ │  └─────────────────┘                              ▼                      │
+ │                                           ┌─────────────┐               │
+ │                                           │  LLM Judge   │               │
+ │                                           │  (codex CLI) │               │
+ │                                           └──────┬──────┘               │
+ │                                                   │ approve &ge; 0.6     │
+ │  ┌──────────────────┐   qty / deny   ┌───────────▼───────────┐          │
+ │  │  trader/risk.py  │ ◄───────────► │   trader/broker.py    │          │
+ │  │ sizing, caps,    │                │ Alpaca paper orders   │          │
+ │  │ SL/TP, daily halt│                └───────────┬───────────┘          │
+ │  └──────────────────┘                            ▼                      │
+ │                                     logs/trades.jsonl + trader.log      │
+ └──────────────────────────────────────────────────────────────────────────┘
+                                                    │
+                                                    ▼
+                                 trader/dashboard.py (Flask) &mdash; this UI
 </pre>
 
-<h2 id="tick">The Tick Cycle</h2>
-<p><code>trader/main.py</code> runs an infinite loop. Every <code>POLL_INTERVAL_SECONDS</code>
-(300s) during market hours it executes one <em>tick</em>:</p>
+<h2 id="scanner">Market Scanner</h2>
+<p><code>trader/scanner.py</code> polls two Alpaca screener endpoints every
+<code>SCANNER_INTERVAL_SECONDS</code> (default 2 minutes) while the stock market is open:</p>
+<ul>
+  <li><strong>Most actives</strong> &mdash; top 20 stocks by volume</li>
+  <li><strong>Market movers</strong> &mdash; top 10 gainers and top 10 losers by % change</li>
+</ul>
+<p>Discovered symbols are added to a <strong>dynamic watchlist</strong> with a TTL of 30 minutes.
+Each re-mention (from scanner or news) refreshes the TTL and boosts the symbol's score.
+Stale entries are pruned automatically. The watchlist is capped at 25 symbols.</p>
+<p>The dynamic watchlist is merged with the seed <code>WATCHLIST</code> from config before each
+stock tick, so the hardcoded tickers are always evaluated as a baseline.</p>
+
+<h2 id="news">News Stream</h2>
+<p><code>trader/news_stream.py</code> runs an Alpaca <code>NewsDataStream</code> WebSocket in a
+daemon thread, subscribed to <code>"*"</code> (all symbols). Each headline pushes an event
+onto the shared queue with:</p>
+<ul>
+  <li>headline, summary, source, URL, timestamp</li>
+  <li>all symbols mentioned in the article</li>
+</ul>
+<p>The main loop handles news events by:</p>
 <ol>
-  <li><strong>Snapshot</strong> — fetch account equity/cash and open positions from Alpaca.</li>
-  <li><strong>Hard exits first</strong> — every open position is checked against stop-loss
-      (−2%) and take-profit (+3%). These exits bypass the judge entirely: safety rules are
-      not up for debate.</li>
-  <li><strong>Fetch bars</strong> — last ~100 five-minute bars per watchlist symbol from the
-      free IEX feed.</li>
-  <li><strong>Evaluate signals</strong> — each symbol runs through the signal engine. Symbols
-      already held can only produce <em>sell</em> signals; unheld symbols only <em>buy</em>.</li>
-  <li><strong>Daily-loss gate</strong> — if equity is down ≥2% vs yesterday's close, all new
-      buys are skipped for the rest of the day.</li>
-  <li><strong>Judge</strong> — surviving signals go to the LLM with full context (bars,
-      indicators, portfolio). Only <code>approve</code> with confidence ≥ 0.6 proceeds.</li>
-  <li><strong>Size &amp; execute</strong> — buys are sized to ≤10% of equity (whole shares,
-      capped by cash); sells close the whole position. Market orders, day time-in-force.</li>
-  <li><strong>Record</strong> — every signal, verdict, entry, and exit is appended to
-      <code>logs/trades.jsonl</code>.</li>
+  <li>Adding the symbol to the dynamic watchlist (via <code>scanner.add_from_news</code>)</li>
+  <li>Recording the news event to <code>trades.jsonl</code></li>
+  <li>If the symbol is currently held, immediately enriching and re-evaluating it
+      (news can trigger exits)</li>
 </ol>
-<p class="muted">Any exception inside a tick is caught and logged; the loop never dies
-mid-session. If the market is closed, the tick is skipped.</p>
+<p class="muted">Free tier: news is delayed ~15 minutes. The $99/mo Algo Trader Plus plan
+provides real-time news.</p>
+
+<h2 id="tick">The Tick Cycle</h2>
+<p><code>trader/main.py</code> runs an event-driven loop with three timer-based triggers:</p>
+<ol>
+  <li><strong>Scanner poll</strong> (every 2 min) &mdash; calls <code>scanner.poll_screener()</code>,
+      pushes new discoveries as <code>SCANNER_HIT</code> events.</li>
+  <li><strong>Crypto tick</strong> (every 5 min, always) &mdash; evaluates
+      <code>CRYPTO_WATCHLIST</code> through signals + judge.</li>
+  <li><strong>Stock tick</strong> (every 5 min, market hours only) &mdash; evaluates the merged
+      dynamic + seed watchlist through signals + enrichment + judge.</li>
+</ol>
+<p>Between timers, the loop drains the event queue (news and scanner hits) with a 1-second
+timeout. Hard exits (stop-loss/take-profit) are checked at the start of each crypto and
+stock tick, before signal evaluation.</p>
 
 <h2 id="signals">Signal Engine</h2>
-<p><code>trader/signals.py</code> is intentionally simple and fully deterministic — the same
+<p><code>trader/signals.py</code> is intentionally simple and fully deterministic &mdash; the same
 bars always produce the same signal, which makes the judge's contribution measurable.</p>
 <h3>Indicators</h3>
 <table>
   <tr><th>Indicator</th><th>Definition</th><th>Parameters</th></tr>
   <tr><td>SMA fast</td><td>mean of last N closes</td><td>N = 9 bars (45 min)</td></tr>
   <tr><td>SMA slow</td><td>mean of last N closes</td><td>N = 21 bars (105 min)</td></tr>
-  <tr><td>RSI</td><td>100 − 100/(1+RS), RS = avg gain / avg loss over N bars</td>
+  <tr><td>RSI</td><td>100 &minus; 100/(1+RS), RS = avg gain / avg loss over N bars</td>
       <td>N = 14, oversold &lt; 30, overbought &gt; 70</td></tr>
 </table>
 <h3>Rules</h3>
 <table>
   <tr><th>Condition</th><th>Holding?</th><th>Signal</th></tr>
   <tr><td>SMA fast crosses <em>above</em> slow (and RSI not overbought)</td><td>No</td>
-      <td><span style="color:var(--green)">buy</span> — momentum entry</td></tr>
+      <td><span style="color:var(--green)">buy</span> &mdash; momentum entry</td></tr>
   <tr><td>RSI drops below 30</td><td>No</td>
-      <td><span style="color:var(--green)">buy</span> — mean-reversion entry</td></tr>
+      <td><span style="color:var(--green)">buy</span> &mdash; mean-reversion entry</td></tr>
   <tr><td>SMA fast crosses <em>below</em> slow</td><td>Yes</td>
-      <td><span style="color:var(--red)">sell</span> — momentum faded</td></tr>
+      <td><span style="color:var(--red)">sell</span> &mdash; momentum faded</td></tr>
   <tr><td>RSI rises above 70</td><td>Yes</td>
-      <td><span style="color:var(--red)">sell</span> — take the froth</td></tr>
+      <td><span style="color:var(--red)">sell</span> &mdash; take the froth</td></tr>
 </table>
 <p>A "cross" requires the relationship to have flipped between the previous bar and the
-current bar — a fast SMA merely <em>being</em> above the slow one is not a signal, which
+current bar &mdash; a fast SMA merely <em>being</em> above the slow one is not a signal, which
 prevents re-firing every tick during a trend.</p>
 
+<h2 id="enrichment">Enrichment</h2>
+<p><code>trader/enrichment.py</code> builds a <strong>case file</strong> for each candidate symbol
+before it goes to the judge. A case file contains:</p>
+<ul>
+  <li>Recent 5-minute bars (from <code>data.py</code>)</li>
+  <li>Last 5 news headlines and summaries for the symbol (REST call to Alpaca news API)</li>
+  <li>Scanner context: how the symbol was discovered, its score, volume/move data</li>
+  <li>The technical signal (if any)</li>
+  <li>Current portfolio state (account + positions)</li>
+</ul>
+<p>This is the key difference from the old architecture: the judge now sees <em>why</em> a stock
+is moving, not just <em>that</em> it moved.</p>
+
 <h2 id="judge">The LLM Judge</h2>
-<p><code>trader/judge.py</code> plays devil's advocate. It receives every candidate signal and
-is prompted to be <em>skeptical</em> — veto anything that looks weak, choppy, or contradicted
-by recent price action.</p>
-<h3>How it's invoked</h3>
-<pre><code>codex exec \
-  --sandbox read-only \          # judge cannot run commands or write files
-  --skip-git-repo-check \
-  --ephemeral \                  # no session state saved
-  --ignore-user-config \         # avoids a retired model pinned in ~/.codex/config.toml
-  --output-schema judge_schema.json \
-  --output-last-message /tmp/&lt;file&gt; \
-  "&lt;prompt&gt;"</code></pre>
-<p>Because this goes through the <code>codex</code> CLI's ChatGPT-subscription auth, judge
-calls cost <strong>no API credits</strong>. A call takes ~15–60s, which is fine at a 5-minute
-cadence, and the judge only runs when a rule actually fires — most ticks make zero LLM calls.</p>
+<p><code>trader/judge.py</code> plays devil's advocate. It receives every candidate signal
+with its full case file and is prompted to be <em>skeptical</em>.</p>
+<h3>Backends</h3>
+<p>The judge is pluggable via <code>JUDGE_BACKEND</code> in config:</p>
+<table>
+  <tr><th>Backend</th><th>How it works</th><th>Cost</th></tr>
+  <tr><td><code>codex</code> (default)</td><td>Shells out to the <code>codex</code> CLI with
+      <code>--output-schema</code> for structured JSON</td><td>Free (ChatGPT subscription)</td></tr>
+  <tr><td><code>ollama</code></td><td>HTTP POST to a local Ollama instance</td>
+      <td>Free (runs locally)</td></tr>
+  <tr><td><code>none</code></td><td>Auto-approves everything</td><td>Free (for testing)</td></tr>
+</table>
+<h3>Enhanced prompt</h3>
+<p>The prompt now includes:</p>
+<ul>
+  <li>Proposed trade (side, symbol, rule, indicators)</li>
+  <li>Last 40 five-minute bars</li>
+  <li><strong>Recent news headlines</strong> for the symbol</li>
+  <li><strong>Discovery context</strong> (scanner source, score, % move, volume)</li>
+  <li>Portfolio state (account + positions)</li>
+</ul>
 <h3>The contract</h3>
-<p><code>--output-schema</code> forces the reply to match <code>trader/judge_schema.json</code>:</p>
-<pre><code>{ "decision": "approve" | "veto", "confidence": 0.0–1.0, "reason": "one sentence" }</code></pre>
-<p>The prompt includes the proposed trade, the rule that fired, current indicator values, the
-last 40 bars, and the account/positions snapshot.</p>
+<pre><code>{ "decision": "approve" | "veto", "confidence": 0.0&ndash;1.0, "reason": "one sentence" }</code></pre>
 <h3>Fail-safe</h3>
-<p>Timeout (120s), non-zero exit code, malformed JSON, or an illegal decision value all
-resolve to <code>veto</code> with confidence 0. A broken judge can never cause a trade —
-it can only prevent them. Set <code>JUDGE_ENABLED = False</code> in config to run a
-rules-only baseline for comparison.</p>
+<p>Timeout, non-zero exit code, malformed JSON, or an illegal decision value all resolve to
+<code>veto</code> with confidence 0. A broken judge can never cause a trade.</p>
 
 <h2 id="risk">Risk Limits</h2>
 <table>
@@ -195,9 +246,9 @@ rules-only baseline for comparison.</p>
       <td>whole shares, additionally capped by available cash</td></tr>
   <tr><td>Max open positions</td><td>4</td><td><code>risk.size_entry</code></td>
       <td>new entries denied at the cap</td></tr>
-  <tr><td>Daily loss halt</td><td>−2% vs prior close</td><td><code>risk.daily_loss_breached</code></td>
+  <tr><td>Daily loss halt</td><td>&minus;2% vs prior close</td><td><code>risk.daily_loss_breached</code></td>
       <td>blocks new entries; exits still allowed</td></tr>
-  <tr><td>Stop-loss</td><td>−2% per position</td><td><code>risk.exit_reason</code></td>
+  <tr><td>Stop-loss</td><td>&minus;2% per position</td><td><code>risk.exit_reason</code></td>
       <td>checked first every tick, no judge involved</td></tr>
   <tr><td>Take-profit</td><td>+3% per position</td><td><code>risk.exit_reason</code></td>
       <td>same</td></tr>
@@ -206,97 +257,147 @@ rules-only baseline for comparison.</p>
 <h2 id="modules">Module Reference</h2>
 <table>
   <tr><th>File</th><th>Responsibility</th></tr>
-  <tr><td><code>trader/config.py</code></td><td>All tunables: watchlist, indicator periods, risk caps, judge settings. Loads <code>.env</code>.</td></tr>
-  <tr><td><code>trader/data.py</code></td><td>Historical 5-min bars via <code>StockHistoricalDataClient</code> (IEX feed).</td></tr>
-  <tr><td><code>trader/signals.py</code></td><td>Pure functions: SMA, RSI, <code>evaluate()</code> → <code>Signal | None</code>.</td></tr>
-  <tr><td><code>trader/judge.py</code></td><td>Prompt building, <code>codex exec</code> subprocess, verdict parsing, fail-safe.</td></tr>
+  <tr><td><code>trader/main.py</code></td><td>Event-driven main loop: timers + queue draining.</td></tr>
+  <tr><td><code>trader/scanner.py</code></td><td>Alpaca screener client, dynamic watchlist with TTL.</td></tr>
+  <tr><td><code>trader/news_stream.py</code></td><td>WebSocket news consumer in a daemon thread.</td></tr>
+  <tr><td><code>trader/enrichment.py</code></td><td>Builds case files (bars + news + signals) for the judge.</td></tr>
+  <tr><td><code>trader/events.py</code></td><td>Event types (<code>EventType</code> enum) and thread-safe <code>event_queue</code>.</td></tr>
+  <tr><td><code>trader/judge.py</code></td><td>Pluggable LLM judge: codex (default), ollama, or none. News-aware prompt.</td></tr>
   <tr><td><code>trader/judge_schema.json</code></td><td>JSON Schema constraining the judge's reply.</td></tr>
+  <tr><td><code>trader/signals.py</code></td><td>Pure functions: SMA, RSI, <code>evaluate()</code> &rarr; <code>Signal | None</code>.</td></tr>
   <tr><td><code>trader/risk.py</code></td><td>Sizing, caps, daily halt, stop-loss/take-profit checks.</td></tr>
   <tr><td><code>trader/broker.py</code></td><td>Alpaca <code>TradingClient</code> wrapper (paper): account, positions, orders, clock.</td></tr>
-  <tr><td><code>trader/main.py</code></td><td>The tick loop; structured event recording.</td></tr>
-  <tr><td><code>trader/dashboard.py</code></td><td>This Flask app: static pages + JSON APIs over the event log and Alpaca.</td></tr>
+  <tr><td><code>trader/data.py</code></td><td>Historical 5-min bars via <code>StockHistoricalDataClient</code> (IEX feed).</td></tr>
+  <tr><td><code>trader/config.py</code></td><td>All tunables: watchlist, scanner, news, signals, risk, judge. Loads <code>.env</code>.</td></tr>
+  <tr><td><code>trader/dashboard.py</code></td><td>Flask app: static pages + JSON APIs over the event log and Alpaca.</td></tr>
 </table>
 
 <h2 id="config">Configuration</h2>
 <p>Everything lives in <code>trader/config.py</code>:</p>
+<h3>Watchlist &amp; timing</h3>
 <table>
   <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
-  <tr><td><code>WATCHLIST</code></td><td>SPY, QQQ, AAPL, NVDA, TSLA, AMD, MSFT, AMZN</td><td>stock symbols, scanned while the market is open</td></tr>
+  <tr><td><code>WATCHLIST</code></td><td>SPY, QQQ, AAPL, NVDA, TSLA, AMD, MSFT, AMZN</td><td>seed stock symbols (always evaluated; scanner adds more)</td></tr>
   <tr><td><code>CRYPTO_WATCHLIST</code></td><td>BTC/USD, ETH/USD, SOL/USD, DOGE/USD</td><td>crypto pairs, scanned 24/7</td></tr>
-  <tr><td><code>POLL_INTERVAL_SECONDS</code></td><td>300</td><td>tick cadence</td></tr>
+  <tr><td><code>POLL_INTERVAL_SECONDS</code></td><td>300</td><td>tick cadence for signal evaluation</td></tr>
   <tr><td><code>BAR_TIMEFRAME_MINUTES</code></td><td>5</td><td>bar size</td></tr>
   <tr><td><code>LOOKBACK_BARS</code></td><td>100</td><td>bars kept per symbol</td></tr>
+</table>
+<h3>Scanner</h3>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>SCANNER_INTERVAL_SECONDS</code></td><td>120</td><td>screener poll cadence</td></tr>
+  <tr><td><code>SCANNER_TOP_ACTIVES</code></td><td>20</td><td>how many most-active stocks to fetch</td></tr>
+  <tr><td><code>SCANNER_TOP_MOVERS</code></td><td>10</td><td>how many gainers/losers to fetch</td></tr>
+  <tr><td><code>SCANNER_WATCHLIST_MAX</code></td><td>25</td><td>dynamic watchlist cap</td></tr>
+  <tr><td><code>SCANNER_ENTRY_TTL_SECONDS</code></td><td>1800</td><td>drop symbols after 30 min of no activity</td></tr>
+</table>
+<h3>News</h3>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>NEWS_STREAM_ENABLED</code></td><td>True</td><td>enable/disable WebSocket news stream</td></tr>
+  <tr><td><code>NEWS_LOOKBACK_ARTICLES</code></td><td>5</td><td>articles fetched per symbol during enrichment</td></tr>
+</table>
+<h3>Signals</h3>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
   <tr><td><code>SMA_FAST / SMA_SLOW</code></td><td>9 / 21</td><td>crossover periods</td></tr>
   <tr><td><code>RSI_PERIOD</code></td><td>14</td><td>RSI window</td></tr>
   <tr><td><code>RSI_OVERSOLD / RSI_OVERBOUGHT</code></td><td>30 / 70</td><td>RSI thresholds</td></tr>
+</table>
+<h3>Risk</h3>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
   <tr><td><code>MAX_POSITION_PCT</code></td><td>0.10</td><td>per-position equity cap</td></tr>
   <tr><td><code>MAX_OPEN_POSITIONS</code></td><td>4</td><td>portfolio breadth cap</td></tr>
   <tr><td><code>DAILY_LOSS_LIMIT_PCT</code></td><td>0.02</td><td>entry halt threshold</td></tr>
   <tr><td><code>STOP_LOSS_PCT / TAKE_PROFIT_PCT</code></td><td>0.02 / 0.03</td><td>per-position exits</td></tr>
+</table>
+<h3>Judge</h3>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
   <tr><td><code>JUDGE_ENABLED</code></td><td>True</td><td>set False for rules-only baseline</td></tr>
-  <tr><td><code>JUDGE_TIMEOUT_SECONDS</code></td><td>120</td><td>codex call timeout</td></tr>
+  <tr><td><code>JUDGE_BACKEND</code></td><td>codex</td><td><code>codex</code>, <code>ollama</code>, or <code>none</code></td></tr>
+  <tr><td><code>JUDGE_TIMEOUT_SECONDS</code></td><td>120</td><td>LLM call timeout</td></tr>
   <tr><td><code>JUDGE_MIN_CONFIDENCE</code></td><td>0.6</td><td>approvals below this are ignored</td></tr>
+  <tr><td><code>OLLAMA_MODEL</code></td><td>llama3.1:8b</td><td>model name (ollama backend only)</td></tr>
+  <tr><td><code>OLLAMA_URL</code></td><td>http://localhost:11434</td><td>Ollama API URL</td></tr>
 </table>
 <p>Secrets go in <code>.env</code> (git-ignored): <code>ALPACA_API_KEY</code>,
-<code>ALPACA_SECRET_KEY</code> — paper keys only.</p>
+<code>ALPACA_SECRET_KEY</code>, and optionally <code>JUDGE_BACKEND</code>,
+<code>OLLAMA_MODEL</code>, <code>OLLAMA_URL</code>.</p>
 
 <h2 id="logs">Event Log Schema</h2>
 <p><code>logs/trades.jsonl</code> is append-only, one JSON object per line, each with a
 <code>ts</code> (UTC ISO 8601) and an <code>event</code> discriminator:</p>
-<h3><code>signal</code> — a rule fired and the judge ruled on it</h3>
+<h3><code>signal</code> &mdash; a rule fired and the judge ruled on it</h3>
 <pre><code>{"event": "signal", "symbol": "NVDA", "side": "buy",
  "rule": "SMA fast crossed above slow",
  "indicators": {"price": 512.3, "sma_fast": 511.8, "sma_slow": 511.2, "rsi": 58.1},
- "verdict": {"decision": "approve", "confidence": 0.78, "reason": "…"},
+ "verdict": {"decision": "approve", "confidence": 0.78, "reason": "..."},
  "ts": "2026-08-14T15:05:12+00:00"}</code></pre>
-<h3><code>entry</code> — an approved buy was submitted</h3>
+<h3><code>entry</code> &mdash; an approved buy was submitted</h3>
 <pre><code>{"event": "entry", "symbol": "NVDA", "qty": 19, "price": 512.3,
- "rule": "SMA fast crossed above slow", "ts": "…"}</code></pre>
-<h3><code>exit</code> — a position was closed</h3>
+ "rule": "SMA fast crossed above slow", "ts": "..."}</code></pre>
+<h3><code>exit</code> &mdash; a position was closed</h3>
 <pre><code>{"event": "exit", "symbol": "NVDA", "reason": "take-profit (3.12%)",
  "position": {"qty": 19, "avg_entry_price": 512.3, "current_price": 528.3,
-              "unrealized_plpc": 0.0312, "market_value": 10037.7}, "ts": "…"}</code></pre>
-<p class="muted">Every judged signal is logged whether approved or vetoed — vetoes are the
-interesting data for evaluating whether the judge adds value over raw rules.</p>
+              "unrealized_plpc": 0.0312, "market_value": 10037.7}, "ts": "..."}</code></pre>
+<h3><code>news</code> &mdash; a headline was received from the news stream</h3>
+<pre><code>{"event": "news", "symbol": "NVDA", "headline": "NVIDIA Q3 earnings beat estimates",
+ "summary": "...", "source": "Benzinga", "url": "...",
+ "created_at": "2026-08-14T14:30:00+00:00", "ts": "..."}</code></pre>
+<h3><code>scanner</code> &mdash; a new symbol was discovered by the screener</h3>
+<pre><code>{"event": "scanner", "symbol": "PLTR", "source": "scanner", "score": 1.0,
+ "scanner_meta": {"pct_change": 4.2, "volume": 85000000}, "ts": "..."}</code></pre>
 
 <h2 id="api">Dashboard API</h2>
 <table>
   <tr><th>Endpoint</th><th>Params</th><th>Returns</th></tr>
   <tr><td><code>GET /api/events</code></td>
-      <td><code>symbol</code>, <code>event</code>, <code>decision</code>,
-          <code>q</code> (substring search), <code>since</code>/<code>until</code> (ISO ts),
-          <code>limit</code> (≤1000), <code>offset</code></td>
+      <td><code>symbol</code>, <code>event</code> (signal/entry/exit/news/scanner),
+          <code>decision</code>, <code>q</code> (substring), <code>since</code>/<code>until</code>,
+          <code>limit</code> (&le;1000), <code>offset</code></td>
       <td>filtered events newest-first, total count, known symbols</td></tr>
-  <tr><td><code>GET /api/summary</code></td><td>—</td>
-      <td>account (equity/cash/prior close), open positions, derived stats
-          (signal count, approval rate, avg confidence, entries/exits)</td></tr>
+  <tr><td><code>GET /api/summary</code></td><td>&mdash;</td>
+      <td>account, positions, stats (signals, approvals, entries, exits, news events,
+          scanner discoveries)</td></tr>
+  <tr><td><code>GET /api/scanner</code></td><td>&mdash;</td>
+      <td>current dynamic watchlist with scores, sources, and metadata</td></tr>
+  <tr><td><code>GET /api/news</code></td>
+      <td><code>symbol</code>, <code>limit</code> (&le;200, default 50)</td>
+      <td>recent news events newest-first</td></tr>
   <tr><td><code>GET /api/history</code></td>
       <td><code>period</code> (1D/1W/1M/3M/1A), <code>timeframe</code> (5Min/1H/1D)</td>
-      <td>Alpaca portfolio history: timestamps, equity series, P/L series, base value</td></tr>
+      <td>Alpaca portfolio history: timestamps, equity series, P/L series</td></tr>
 </table>
-<p>Filtering and pagination happen server-side, so the browser only ever holds one page of
-events regardless of log size.</p>
 
 <h2 id="runbook">Runbook</h2>
 <pre><code># one-time setup
-python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env        # paste Alpaca PAPER keys
 
-# terminal 1 — the bot
-python -m trader.main
+# run both bot + dashboard (Ctrl-C stops both)
+make run
 
-# terminal 2 — this dashboard
-python -m trader.dashboard   # → http://localhost:8600</code></pre>
+# or separately:
+python -m trader.main        # terminal 1: the bot
+python -m trader.dashboard   # terminal 2: dashboard at http://localhost:8600</code></pre>
 <h3>Troubleshooting</h3>
 <table>
   <tr><th>Symptom</th><th>Likely cause</th></tr>
   <tr><td>Dashboard shows "Alpaca unavailable"</td><td>missing/invalid keys in <code>.env</code>;
       the event feed still works from local logs</td></tr>
   <tr><td>Every verdict is <code>judge error (codex failed)</code></td>
-      <td>codex CLI logged out or model config issue — run
+      <td>codex CLI logged out or model config issue &mdash; run
           <code>codex exec --ignore-user-config "say OK"</code> manually to check</td></tr>
-  <tr><td>No signals for hours</td><td>normal in flat markets; crossovers are rare by design</td></tr>
+  <tr><td>No signals for hours</td><td>normal in flat markets; crossovers are rare by design.
+      Check the scanner panel &mdash; if it's discovering symbols, the pipeline is working.</td></tr>
+  <tr><td>Scanner panel is empty</td><td>scanner only runs while the stock market is open.
+      Crypto ticks still run 24/7.</td></tr>
+  <tr><td>News feed is empty</td><td>check <code>NEWS_STREAM_ENABLED</code> in config; free tier
+      news is 15-min delayed but should still appear. Check logs for WebSocket errors.</td></tr>
   <tr><td>Bars look different from your charting app</td>
       <td>free IEX feed has thinner volume than the paid SIP feed</td></tr>
 </table>
