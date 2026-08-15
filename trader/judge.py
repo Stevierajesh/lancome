@@ -22,7 +22,7 @@ log = logging.getLogger("judge")
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_schema.json")
 
 # ---------------------------------------------------------------------------
-# Prompt
+# Prompt.. Going to replace with a specialized lighter model instead a general purpose LLM. The prompt is still useful for testing and debugging.
 # ---------------------------------------------------------------------------
 
 PROMPT_TEMPLATE = """You are a disciplined risk manager for an intraday PAPER-trading experiment.
