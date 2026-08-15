@@ -1,4 +1,4 @@
-# Paper Trader
+#  
 
 Event-driven paper-trading bot for Alpaca. Scans the entire market for unusual
 activity, streams real-time news, and feeds both into an LLM judge alongside
