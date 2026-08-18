@@ -80,12 +80,14 @@ three information sources to make trading decisions:</p>
   <li><strong>News stream</strong> — real-time WebSocket feed of Benzinga headlines. Symbols
       mentioned in news are added to the watchlist; news on held positions triggers immediate
       re-evaluation.</li>
-  <li><strong>Technical signals</strong> — SMA crossover and RSI on 5-minute bars, same as before
-      but now applied to the dynamic watchlist.</li>
+  <li><strong>Technical signals</strong> — three tiers of signals on 5-minute bars: reactive
+      (volume spike, gap, momentum), context-aware (VWAP, relative volume, bid/ask pressure,
+      sector correlation, multi-timeframe), and trend (SMA crossover, RSI).</li>
 </ol>
 <p>When a signal fires, an <strong>enrichment</strong> step assembles a case file (bars + news +
-scanner context + portfolio state) and sends it to an <strong>LLM judge</strong> that approves
-or vetoes with a confidence score. <strong>Risk limits</strong> cap everything regardless.</p>
+scanner context + portfolio state) and sends it to an <strong>LLM judge</strong> that acts as a
+filter &mdash; approving unless there's a specific reason the trade will fail.
+<strong>Risk limits</strong> cap everything regardless.</p>
 <div class="warn">Paper trading only. The broker client is constructed with
 <code>paper=True</code>; never point this at a live account.</div>
 
@@ -138,6 +140,9 @@ Each re-mention (from scanner or news) refreshes the TTL and boosts the symbol's
 Stale entries are pruned automatically. The watchlist is capped at 25 symbols.</p>
 <p>The dynamic watchlist is merged with the seed <code>WATCHLIST</code> from config before each
 stock tick, so the hardcoded tickers are always evaluated as a baseline.</p>
+<p>The watchlist is <strong>persisted</strong> to <code>scanner.json</code> and restored on startup,
+so a restart doesn't lose scanner state. Stale entries (past their TTL) are dropped during
+restore.</p>
 
 <h2 id="news">News Stream</h2>
 <p><code>trader/news_stream.py</code> runs an Alpaca <code>NewsDataStream</code> WebSocket in a
@@ -151,8 +156,8 @@ onto the shared queue with:</p>
 <ol>
   <li>Adding the symbol to the dynamic watchlist (via <code>scanner.add_from_news</code>)</li>
   <li>Recording the news event to <code>trades.jsonl</code></li>
-  <li>If the symbol is currently held, immediately enriching and re-evaluating it
-      (news can trigger exits)</li>
+  <li>Immediately enriching and evaluating the symbol through the signal engine and judge
+      &mdash; news can trigger both entries and exits</li>
 </ol>
 <p class="muted">Free tier: news is delayed ~15 minutes. The $99/mo Algo Trader Plus plan
 provides real-time news.</p>
@@ -163,40 +168,98 @@ provides real-time news.</p>
   <li><strong>Scanner poll</strong> (every 2 min) &mdash; calls <code>scanner.poll_screener()</code>,
       pushes new discoveries as <code>SCANNER_HIT</code> events.</li>
   <li><strong>Crypto tick</strong> (every 5 min, always) &mdash; evaluates
-      <code>CRYPTO_WATCHLIST</code> through signals + judge.</li>
+      <code>CRYPTO_WATCHLIST</code> through signals + judge. Fetches hourly bars for
+      multi-timeframe confirmation.</li>
   <li><strong>Stock tick</strong> (every 5 min, market hours only) &mdash; evaluates the merged
-      dynamic + seed watchlist through signals + enrichment + judge.</li>
+      dynamic + seed watchlist. Fetches latest quotes (bid/ask), hourly bars, and uses
+      SPY as the benchmark for sector correlation signals.</li>
 </ol>
 <p>Between timers, the loop drains the event queue (news and scanner hits) with a 1-second
 timeout. Hard exits (stop-loss/take-profit) are checked at the start of each crypto and
 stock tick, before signal evaluation.</p>
+<p>A <strong>signal cooldown</strong> suppresses duplicate signals: when the judge vetoes a
+signal, that symbol+reason pair is blocked for 30 minutes to avoid spamming the judge
+with identical setups. News-triggered signals bypass the cooldown since news is a fresh
+catalyst.</p>
 
 <h2 id="signals">Signal Engine</h2>
-<p><code>trader/signals.py</code> is intentionally simple and fully deterministic &mdash; the same
-bars always produce the same signal, which makes the judge's contribution measurable.</p>
-<h3>Indicators</h3>
-<table>
-  <tr><th>Indicator</th><th>Definition</th><th>Parameters</th></tr>
-  <tr><td>SMA fast</td><td>mean of last N closes</td><td>N = 9 bars (45 min)</td></tr>
-  <tr><td>SMA slow</td><td>mean of last N closes</td><td>N = 21 bars (105 min)</td></tr>
-  <tr><td>RSI</td><td>100 &minus; 100/(1+RS), RS = avg gain / avg loss over N bars</td>
-      <td>N = 14, oversold &lt; 30, overbought &gt; 70</td></tr>
-</table>
-<h3>Rules</h3>
+<p><code>trader/signals.py</code> is fully deterministic &mdash; the same inputs always produce
+the same signal, which makes the judge's contribution measurable. Signals are checked
+in priority order: reactive first, then context-aware, then trend. The first match wins.</p>
+
+<h3>Tier 1: Reactive (fast)</h3>
+<p>Designed to respond to the unusual activity that the scanner and news stream surface.</p>
 <table>
   <tr><th>Condition</th><th>Holding?</th><th>Signal</th></tr>
-  <tr><td>SMA fast crosses <em>above</em> slow (and RSI not overbought)</td><td>No</td>
+  <tr><td>Volume &ge; 2.5x 20-bar average + positive momentum</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> &mdash; volume spike</td></tr>
+  <tr><td>Open &ge; 1% above previous close</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> &mdash; gap up</td></tr>
+  <tr><td>Price +1.5% over 5 bars (RSI not overbought)</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> &mdash; momentum burst</td></tr>
+  <tr><td>Open &le; &minus;1% below previous close</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> &mdash; gap down</td></tr>
+  <tr><td>Price &minus;2% over 5 bars</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> &mdash; momentum drop</td></tr>
+</table>
+
+<h3>Tier 2: Context-aware (need extra data)</h3>
+<p>These signals use richer data sources: VWAP from intraday bars, time-of-day volume
+patterns, live bid/ask quotes, SPY as a benchmark, and hourly bars for multi-timeframe
+confirmation. They fire only when the data is available (tick functions fetch it; news-
+triggered evaluations use basic signals only).</p>
+<table>
+  <tr><th>Condition</th><th>Holding?</th><th>Signal</th></tr>
+  <tr><td>Price &ge; 1.5% below VWAP (not in freefall)</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> &mdash; VWAP mean reversion</td></tr>
+  <tr><td>Price &ge; 2% above VWAP</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> &mdash; overextended above VWAP</td></tr>
+  <tr><td>Volume &ge; 3x same-time-of-day average + uptick</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> &mdash; unusual time-of-day volume</td></tr>
+  <tr><td>Volume &ge; 3x same-time-of-day average + downtick</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> &mdash; unusual selling at this hour</td></tr>
+  <tr><td>Bid-side &ge; 70% of total size (spread &le; 0.3%)</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> &mdash; bid/ask buying pressure</td></tr>
+  <tr><td>Ask-side &ge; 70% of total size (spread &le; 0.3%)</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> &mdash; bid/ask selling pressure</td></tr>
+  <tr><td>Outperforming SPY by &ge; 1.5% over 10 bars</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> &mdash; idiosyncratic strength</td></tr>
+  <tr><td>Underperforming SPY by &ge; 1.5% over 10 bars</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> &mdash; idiosyncratic weakness</td></tr>
+  <tr><td>Hourly SMA bullish + 5-min momentum positive</td><td>No</td>
+      <td><span style="color:var(--green)">buy</span> &mdash; multi-timeframe confirmation</td></tr>
+  <tr><td>Hourly SMA bearish + 5-min momentum negative</td><td>Yes</td>
+      <td><span style="color:var(--red)">sell</span> &mdash; multi-timeframe confirmation</td></tr>
+</table>
+
+<h3>Tier 3: Trend (slow, fallback)</h3>
+<p>The original SMA crossover and RSI signals. Require at least 23 bars of history.</p>
+<table>
+  <tr><th>Condition</th><th>Holding?</th><th>Signal</th></tr>
+  <tr><td>SMA fast (9) crosses <em>above</em> slow (21), RSI not overbought</td><td>No</td>
       <td><span style="color:var(--green)">buy</span> &mdash; momentum entry</td></tr>
-  <tr><td>RSI drops below 30</td><td>No</td>
+  <tr><td>RSI drops below 25</td><td>No</td>
       <td><span style="color:var(--green)">buy</span> &mdash; mean-reversion entry</td></tr>
   <tr><td>SMA fast crosses <em>below</em> slow</td><td>Yes</td>
       <td><span style="color:var(--red)">sell</span> &mdash; momentum faded</td></tr>
-  <tr><td>RSI rises above 70</td><td>Yes</td>
+  <tr><td>RSI rises above 75</td><td>Yes</td>
       <td><span style="color:var(--red)">sell</span> &mdash; take the froth</td></tr>
 </table>
-<p>A "cross" requires the relationship to have flipped between the previous bar and the
-current bar &mdash; a fast SMA merely <em>being</em> above the slow one is not a signal, which
-prevents re-firing every tick during a trend.</p>
+
+<h3>Indicators summary</h3>
+<table>
+  <tr><th>Indicator</th><th>Definition</th><th>Parameters</th></tr>
+  <tr><td>SMA fast / slow</td><td>simple moving average of closes</td><td>9 / 21 bars</td></tr>
+  <tr><td>RSI</td><td>100 &minus; 100/(1+RS)</td><td>period 14, oversold &lt; 25, overbought &gt; 75</td></tr>
+  <tr><td>Volume ratio</td><td>current bar vol / 20-bar avg vol</td><td>spike &ge; 2.5x</td></tr>
+  <tr><td>Gap %</td><td>(open &minus; prev close) / prev close</td><td>threshold &ge; 1%</td></tr>
+  <tr><td>Momentum %</td><td>rate of change over N bars</td><td>N = 5, buy &ge; 1.5%, sell &le; &minus;2%</td></tr>
+  <tr><td>VWAP</td><td>cumulative(TP &times; vol) / cumulative(vol), daily reset</td><td>buy &le; &minus;1.5%, sell &ge; +2%</td></tr>
+  <tr><td>Relative vol TOD</td><td>current vol / avg vol at same time-of-day</td><td>threshold &ge; 3x</td></tr>
+  <tr><td>Bid/ask imbalance</td><td>bid_size / (bid_size + ask_size)</td><td>buy &ge; 70%, sell &le; 30%, spread &le; 0.3%</td></tr>
+  <tr><td>Correlation break</td><td>symbol return &minus; SPY return over N bars</td><td>N = 10, threshold &ge; 1.5%</td></tr>
+  <tr><td>Hourly SMA</td><td>fast/slow SMA on 1-hour bars + direction</td><td>fast 5 / slow 13</td></tr>
+</table>
 
 <h2 id="enrichment">Enrichment</h2>
 <p><code>trader/enrichment.py</code> builds a <strong>case file</strong> for each candidate symbol
@@ -205,15 +268,19 @@ before it goes to the judge. A case file contains:</p>
   <li>Recent 5-minute bars (from <code>data.py</code>)</li>
   <li>Last 5 news headlines and summaries for the symbol (REST call to Alpaca news API)</li>
   <li>Scanner context: how the symbol was discovered, its score, volume/move data</li>
-  <li>The technical signal (if any)</li>
+  <li>The technical signal with all computed indicators (VWAP, bid/ask, correlation, etc.)</li>
   <li>Current portfolio state (account + positions)</li>
 </ul>
-<p>This is the key difference from the old architecture: the judge now sees <em>why</em> a stock
-is moving, not just <em>that</em> it moved.</p>
+<p>During tick cycles, the signal engine also receives <strong>extra context</strong> that enrichment
+doesn't fetch: latest bid/ask quotes, hourly bars, and SPY benchmark bars. These power the
+context-aware signals (tier 2) but aren't re-fetched during news-triggered evaluations to
+avoid unnecessary API calls.</p>
 
 <h2 id="judge">The LLM Judge</h2>
-<p><code>trader/judge.py</code> plays devil's advocate. It receives every candidate signal
-with its full case file and is prompted to be <em>skeptical</em>.</p>
+<p><code>trader/judge.py</code> acts as a trade filter, not a risk manager. It receives every
+candidate signal with its full case file and is prompted to approve unless there's a
+specific, concrete reason the trade will fail (freefall, opposing momentum, no liquidity,
+negative news). Hard risk limits handle downside protection separately.</p>
 <h3>Backends</h3>
 <p>The judge is pluggable via <code>JUDGE_BACKEND</code> in config:</p>
 <table>
@@ -264,10 +331,10 @@ with its full case file and is prompted to be <em>skeptical</em>.</p>
   <tr><td><code>trader/events.py</code></td><td>Event types (<code>EventType</code> enum) and thread-safe <code>event_queue</code>.</td></tr>
   <tr><td><code>trader/judge.py</code></td><td>Pluggable LLM judge: codex (default), ollama, or none. News-aware prompt.</td></tr>
   <tr><td><code>trader/judge_schema.json</code></td><td>JSON Schema constraining the judge's reply.</td></tr>
-  <tr><td><code>trader/signals.py</code></td><td>Pure functions: SMA, RSI, <code>evaluate()</code> &rarr; <code>Signal | None</code>.</td></tr>
+  <tr><td><code>trader/signals.py</code></td><td>Three-tier signal engine: reactive, context-aware, and trend. Pure functions: <code>evaluate()</code> &rarr; <code>Signal | None</code>.</td></tr>
   <tr><td><code>trader/risk.py</code></td><td>Sizing, caps, daily halt, stop-loss/take-profit checks.</td></tr>
   <tr><td><code>trader/broker.py</code></td><td>Alpaca <code>TradingClient</code> wrapper (paper): account, positions, orders, clock.</td></tr>
-  <tr><td><code>trader/data.py</code></td><td>Historical 5-min bars via <code>StockHistoricalDataClient</code> (IEX feed).</td></tr>
+  <tr><td><code>trader/data.py</code></td><td>Historical bars (5-min + hourly), latest quotes via <code>StockHistoricalDataClient</code> (IEX feed).</td></tr>
   <tr><td><code>trader/config.py</code></td><td>All tunables: watchlist, scanner, news, signals, risk, judge. Loads <code>.env</code>.</td></tr>
   <tr><td><code>trader/dashboard.py</code></td><td>Flask app: static pages + JSON APIs over the event log and Alpaca.</td></tr>
 </table>
@@ -298,12 +365,33 @@ with its full case file and is prompted to be <em>skeptical</em>.</p>
   <tr><td><code>NEWS_STREAM_ENABLED</code></td><td>True</td><td>enable/disable WebSocket news stream</td></tr>
   <tr><td><code>NEWS_LOOKBACK_ARTICLES</code></td><td>5</td><td>articles fetched per symbol during enrichment</td></tr>
 </table>
-<h3>Signals</h3>
+<h3>Signals &mdash; trend</h3>
 <table>
   <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
   <tr><td><code>SMA_FAST / SMA_SLOW</code></td><td>9 / 21</td><td>crossover periods</td></tr>
   <tr><td><code>RSI_PERIOD</code></td><td>14</td><td>RSI window</td></tr>
-  <tr><td><code>RSI_OVERSOLD / RSI_OVERBOUGHT</code></td><td>30 / 70</td><td>RSI thresholds</td></tr>
+  <tr><td><code>RSI_OVERSOLD / RSI_OVERBOUGHT</code></td><td>25 / 75</td><td>RSI thresholds (tightened to fire only on real extremes)</td></tr>
+</table>
+<h3>Signals &mdash; reactive</h3>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>VOLUME_SPIKE_THRESHOLD</code></td><td>2.5</td><td>current bar vol &ge; Nx 20-bar avg</td></tr>
+  <tr><td><code>GAP_UP_THRESHOLD</code></td><td>1.0</td><td>open N% above previous close</td></tr>
+  <tr><td><code>MOMENTUM_PERIOD</code></td><td>5</td><td>bars for rate-of-change calc</td></tr>
+  <tr><td><code>MOMENTUM_BUY_THRESHOLD</code></td><td>1.5</td><td>+N% over momentum period to buy</td></tr>
+  <tr><td><code>MOMENTUM_SELL_THRESHOLD</code></td><td>2.0</td><td>&minus;N% over momentum period to sell</td></tr>
+</table>
+<h3>Signals &mdash; context-aware</h3>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>VWAP_DEVIATION_BUY_PCT</code></td><td>&minus;1.5</td><td>buy when price N% below VWAP</td></tr>
+  <tr><td><code>VWAP_DEVIATION_SELL_PCT</code></td><td>2.0</td><td>sell when price N% above VWAP</td></tr>
+  <tr><td><code>RELATIVE_VOLUME_TOD_THRESHOLD</code></td><td>3.0</td><td>Nx normal volume for this time-of-day slot</td></tr>
+  <tr><td><code>BID_ASK_IMBALANCE_THRESHOLD</code></td><td>0.70</td><td>N% on one side = directional pressure</td></tr>
+  <tr><td><code>SPREAD_MAX_PCT</code></td><td>0.3</td><td>ignore quotes with spread above N%</td></tr>
+  <tr><td><code>CORRELATION_BREAK_PCT</code></td><td>1.5</td><td>symbol diverges from SPY by N%</td></tr>
+  <tr><td><code>CORRELATION_LOOKBACK</code></td><td>10</td><td>bars for correlation comparison</td></tr>
+  <tr><td><code>HOURLY_SMA_FAST / HOURLY_SMA_SLOW</code></td><td>5 / 13</td><td>multi-timeframe SMA periods on 1-hour bars</td></tr>
 </table>
 <h3>Risk</h3>
 <table>
@@ -392,8 +480,10 @@ python -m trader.dashboard   # terminal 2: dashboard at http://localhost:8600</c
   <tr><td>Every verdict is <code>judge error (codex failed)</code></td>
       <td>codex CLI logged out or model config issue &mdash; run
           <code>codex exec --ignore-user-config "say OK"</code> manually to check</td></tr>
-  <tr><td>No signals for hours</td><td>normal in flat markets; crossovers are rare by design.
-      Check the scanner panel &mdash; if it's discovering symbols, the pipeline is working.</td></tr>
+  <tr><td>No signals for hours</td><td>less common now with reactive and context signals, but
+      possible in very flat markets. Check the scanner panel &mdash; if it's discovering
+      symbols, the pipeline is working. A signal cooldown (30 min) also suppresses repeated
+      vetoed signals.</td></tr>
   <tr><td>Scanner panel is empty</td><td>scanner only runs while the stock market is open.
       Crypto ticks still run 24/7.</td></tr>
   <tr><td>News feed is empty</td><td>check <code>NEWS_STREAM_ENABLED</code> in config; free tier
