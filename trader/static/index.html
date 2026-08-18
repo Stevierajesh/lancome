@@ -25,8 +25,8 @@
   <!-- stat cards, grouped: account / activity -->
   <div id="stats"></div>
 
-  <div class="panels">
-    <div class="col">
+  <div class="dashboard-grid">
+    <div class="primary-col">
       <section>
         <h2>
           Equity
@@ -45,9 +45,42 @@
         <h2>Dynamic Watchlist <span class="count" id="watchlist-count"></span></h2>
         <div id="watchlist"></div>
       </section>
+
+      <section>
+        <h2>Event Feed <span class="count" id="event-count"></span></h2>
+
+        <div class="filters">
+          <div class="segmented" id="f-event">
+            <button data-event="" class="active">All</button>
+            <button data-event="signal">Signals</button>
+            <button data-event="entry">Entries</button>
+            <button data-event="exit">Exits</button>
+            <button data-event="news">News</button>
+            <button data-event="scanner">Scanner</button>
+            <button data-event="liquidate">Resets</button>
+          </div>
+          <select id="f-symbol"><option value="">All symbols</option></select>
+          <select id="f-decision">
+            <option value="">All verdicts</option>
+            <option value="approve">approved</option>
+            <option value="veto">vetoed</option>
+          </select>
+          <input type="text" id="f-q" placeholder="Search rule, reason, indicator...">
+          <button id="f-clear">Clear</button>
+          <label><input type="checkbox" id="auto-refresh" checked> auto-refresh</label>
+        </div>
+
+        <div id="events"></div>
+
+        <div class="pager">
+          <button id="pg-prev">Prev</button>
+          <span id="pg-info"></span>
+          <button id="pg-next">Next</button>
+        </div>
+      </section>
     </div>
 
-    <div class="col">
+    <div class="side-col">
       <section>
         <h2>
           Open Positions
@@ -64,39 +97,6 @@
       </section>
     </div>
   </div>
-
-  <section>
-    <h2>Event Feed <span class="count" id="event-count"></span></h2>
-
-    <div class="filters">
-      <div class="segmented" id="f-event">
-        <button data-event="" class="active">All</button>
-        <button data-event="signal">Signals</button>
-        <button data-event="entry">Entries</button>
-        <button data-event="exit">Exits</button>
-        <button data-event="news">News</button>
-        <button data-event="scanner">Scanner</button>
-        <button data-event="liquidate">Resets</button>
-      </div>
-      <select id="f-symbol"><option value="">All symbols</option></select>
-      <select id="f-decision">
-        <option value="">All verdicts</option>
-        <option value="approve">approved</option>
-        <option value="veto">vetoed</option>
-      </select>
-      <input type="text" id="f-q" placeholder="Search rule, reason, indicator…">
-      <button id="f-clear">Clear</button>
-      <label><input type="checkbox" id="auto-refresh" checked> auto-refresh</label>
-    </div>
-
-    <div id="events"></div>
-
-    <div class="pager">
-      <button id="pg-prev">‹ Prev</button>
-      <span id="pg-info"></span>
-      <button id="pg-next">Next ›</button>
-    </div>
-  </section>
 </main>
 
 <script type="module" src="/static/js/dashboard.js"></script>

@@ -100,17 +100,20 @@ section > h2 {
 section > h2 .count { color: var(--dim); text-transform: none; letter-spacing: 0; }
 section > h2 .spacer { margin-left: auto; }
 
-/* Two independent stacks. Panels pack against the one above them, never
-   against the panel beside them — so a short panel can't open a void. */
-.panels {
+.dashboard-grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 16px;
-  margin-bottom: 16px;
   align-items: start;
 }
-.panels .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-@media (max-width: 900px) { .panels { grid-template-columns: 1fr; } }
+.primary-col,
+.side-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+@media (max-width: 900px) { .dashboard-grid { grid-template-columns: 1fr; } }
 
 /* ---------------------------------------------------------------- stat rows */
 
