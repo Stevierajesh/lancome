@@ -41,6 +41,22 @@ SCANNER_FILE = os.path.join(config.LOG_DIR, "scanner.json")
 # Position symbols drop the slash: data/order "BTC/USD" ↔ position "BTCUSD"
 CRYPTO_BY_POS_SYMBOL = {s.replace("/", ""): s for s in config.CRYPTO_WATCHLIST}
 
+# Signal cooldown: suppress the same signal (symbol+reason) for 30 min after a veto
+# so the judge isn't spammed with identical setups every tick.
+SIGNAL_COOLDOWN_SECONDS = 1800
+_signal_cooldowns: dict[str, float] = {}
+
+
+def _on_cooldown(symbol: str, reason: str) -> bool:
+    key = f"{symbol}:{reason}"
+    expires = _signal_cooldowns.get(key, 0)
+    return time.time() < expires
+
+
+def _set_cooldown(symbol: str, reason: str):
+    key = f"{symbol}:{reason}"
+    _signal_cooldowns[key] = time.time() + SIGNAL_COOLDOWN_SECONDS
+
 
 # ---------------------------------------------------------------------------
 # Persistence helpers
@@ -150,6 +166,8 @@ def tick_crypto(judge: JudgeBase, news_client: NewsClient, scanner: Scanner,
         sig = signals.evaluate(symbol, bars, holding=pos_symbol in positions)
         if sig is None:
             continue
+        if _on_cooldown(symbol, sig.reason):
+            continue
         case = CaseFile(
             symbol=symbol,
             bars=bars,
@@ -163,7 +181,10 @@ def tick_crypto(judge: JudgeBase, news_client: NewsClient, scanner: Scanner,
                 "rule": sig.reason, "indicators": sig.indicators, "verdict": verdict})
         log.info("judge: %s (%.2f) — %s", verdict["decision"], verdict["confidence"],
                  verdict["reason"])
-        execute_if_approved(case, verdict, positions, account)
+        if verdict["decision"] == "approve":
+            execute_if_approved(case, verdict, positions, account)
+        else:
+            _set_cooldown(symbol, sig.reason)
 
 
 def tick_stocks(watchlist: list[str], judge: JudgeBase, news_client: NewsClient,
@@ -178,8 +199,10 @@ def tick_stocks(watchlist: list[str], judge: JudgeBase, news_client: NewsClient,
         sig = signals.evaluate(symbol, bars, holding=pos_symbol in positions)
         if sig is None:
             continue
+        if _on_cooldown(symbol, sig.reason):
+            continue
         case = enrich(symbol, scanner, news_client, account, positions)
-        case.signal = sig  # use signal from our bars, not re-fetched
+        case.signal = sig
         case.bars = bars
         log.info("signal: %s %s (%s) %s", sig.side, symbol, sig.reason, sig.indicators)
         verdict = judge.evaluate(case)
@@ -187,7 +210,10 @@ def tick_stocks(watchlist: list[str], judge: JudgeBase, news_client: NewsClient,
                 "rule": sig.reason, "indicators": sig.indicators, "verdict": verdict})
         log.info("judge: %s (%.2f) — %s", verdict["decision"], verdict["confidence"],
                  verdict["reason"])
-        execute_if_approved(case, verdict, positions, account)
+        if verdict["decision"] == "approve":
+            execute_if_approved(case, verdict, positions, account)
+        else:
+            _set_cooldown(symbol, sig.reason)
 
 
 # ---------------------------------------------------------------------------

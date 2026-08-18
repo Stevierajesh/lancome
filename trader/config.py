@@ -22,14 +22,14 @@ LOOKBACK_BARS = 100                  # ~1.5 trading days of 5-min bars
 SMA_FAST = 9
 SMA_SLOW = 21
 RSI_PERIOD = 14
-RSI_OVERSOLD = 30
-RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 25                    # tighter than 30 — only fire on real capitulation
+RSI_OVERBOUGHT = 75                  # tighter than 70 — let winners run longer
 
 # Signal parameters — reactive (fast)
-VOLUME_SPIKE_THRESHOLD = 3.0          # current bar volume >= 3x the 20-bar average
-GAP_UP_THRESHOLD = 1.5               # open >= 1.5% above previous close
+VOLUME_SPIKE_THRESHOLD = 2.5         # current bar volume >= 2.5x the 20-bar average
+GAP_UP_THRESHOLD = 1.0               # open >= 1% above previous close
 MOMENTUM_PERIOD = 5                  # rate of change over last 5 bars
-MOMENTUM_BUY_THRESHOLD = 2.0         # +2% over MOMENTUM_PERIOD bars
+MOMENTUM_BUY_THRESHOLD = 1.5         # +1.5% over MOMENTUM_PERIOD bars
 MOMENTUM_SELL_THRESHOLD = 2.0        # -2% triggers sell if holding
 
 # Risk parameters

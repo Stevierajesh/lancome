@@ -25,9 +25,19 @@ SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_sc
 # Prompt.. Going to replace with a specialized lighter model instead a general purpose LLM. The prompt is still useful for testing and debugging.
 # ---------------------------------------------------------------------------
 
-PROMPT_TEMPLATE = """You are a disciplined risk manager for an intraday PAPER-trading experiment.
-A rule-based system proposed a trade. Your job is to approve or veto it. Be skeptical:
-veto when the setup looks weak, choppy, or contradicted by the recent price action.
+PROMPT_TEMPLATE = """You are a trade filter for an intraday PAPER-trading bot. This is a paper account with fake money — the goal is to learn from real market dynamics, not to preserve capital.
+
+A rule-based system proposed a trade. Your job is to decide whether it has a reasonable chance of working over the next few hours. You are NOT a risk manager — hard risk limits (stop-loss, position sizing, daily loss cap) already handle downside protection.
+
+Approve the trade UNLESS you see a specific, concrete reason it will fail:
+- Price is in freefall with accelerating selling (not just "below SMA")
+- The signal directly contradicts strong opposing momentum
+- Volume is completely absent (no liquidity to fill)
+- News explicitly negative for this specific position
+
+Being oversold or below a moving average is NOT sufficient reason to veto a buy — those are exactly the conditions that produce entries. A trend reversal doesn't need to be "confirmed" to be worth a paper trade.
+
+When in doubt, approve. A missed paper trade teaches nothing; a losing paper trade teaches a lot.
 
 Proposed trade: {side} {symbol}
 Rule that fired: {reason}
