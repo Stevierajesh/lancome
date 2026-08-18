@@ -6,6 +6,7 @@ load_dotenv()
 
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
+TARGET_EQUITY = float(os.environ.get("TARGET_EQUITY", "0") or 0)
 
 # Liquid, high-volume names so 5-min bars are meaningful
 WATCHLIST = ["SPY", "QQQ", "AAPL", "NVDA", "TSLA", "AMD", "MSFT", "AMZN"]

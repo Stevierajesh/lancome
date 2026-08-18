@@ -31,10 +31,10 @@ The signal engine runs three tiers in priority order:
 When a signal fires:
 
 1. An **enrichment** step builds a case file: recent bars, news headlines,
-   scanner context, and portfolio state.
+   scanner context, portfolio state, and run context.
 2. The **LLM judge** filters the trade — approving unless there's a specific
    reason it will fail. Hard risk limits handle downside separately.
-3. **Risk limits** enforce position sizing (10% of equity), max positions (4),
+3. **Risk limits** enforce position sizing (7% of equity), max positions (13),
    daily loss halt (-2%), stop-loss (-2%), and take-profit (+3%).
 
 All decisions are appended to `logs/trades.jsonl`; runtime logs go to
@@ -51,6 +51,10 @@ cp .env.example .env   # then paste your Alpaca PAPER keys
 Requires the `codex` CLI to be installed and logged in (default judge backend).
 Alternatively, set `JUDGE_BACKEND=ollama` in `.env` and run a local model, or
 `JUDGE_BACKEND=none` to auto-approve everything for testing.
+
+Optional: set `TARGET_EQUITY` in `.env` to give the judge a paper-account goal.
+The target is prompt context only; deterministic risk limits still control
+position sizing, daily loss halts, stop-losses, and take-profits.
 
 ## Run
 

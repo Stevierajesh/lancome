@@ -53,6 +53,14 @@ Discovery context: {discovery}
 Portfolio context:
 {portfolio}
 
+Run context:
+{run_context}
+
+Use the run context for calibration: the date and target equity explain the
+paper-trading objective, but they are not permission to force marginal trades.
+Never approve solely because a target exists; approve only when the proposed
+setup has a concrete edge under the listed risk limits.
+
 Respond with JSON only: {{"decision": "approve" or "veto", "confidence": 0-1, "reason": "one sentence"}}"""
 
 
@@ -94,6 +102,7 @@ def _build_prompt(case: CaseFile) -> str:
         news_section=news_section,
         discovery=discovery,
         portfolio=json.dumps(case.portfolio, indent=2),
+        run_context=json.dumps(case.run_context, indent=2),
     )
 
 

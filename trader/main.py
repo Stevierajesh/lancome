@@ -18,7 +18,7 @@ from queue import Empty
 from alpaca.data.historical import NewsClient
 
 from . import broker, config, data, risk, signals
-from .enrichment import CaseFile, enrich
+from .enrichment import CaseFile, build_run_context, enrich
 from .events import Event, EventType, event_queue
 from .judge import JudgeBase, create_judge
 from .news_stream import NewsStreamWorker
@@ -317,6 +317,7 @@ def tick_crypto(judge: JudgeBase, news_client: NewsClient, scanner: Scanner,
                 signal=sig,
                 scanner_context=scanner.get_entry(symbol) or {},
                 portfolio={"account": account, "positions": positions},
+                run_context=build_run_context(account, positions, stocks_open=False),
             )
             log.info("signal: %s %s (%s)", sig.side, symbol, sig.reason)
             verdict = judge.evaluate(case)
@@ -370,6 +371,7 @@ def tick_stocks(watchlist: list[str], judge: JudgeBase, news_client: NewsClient,
             case = enrich(symbol, scanner, news_client, account, positions)
             case.signal = sig
             case.bars = bars
+            case.run_context = build_run_context(account, positions, stocks_open=True)
             log.info("signal: %s %s (%s) %s", sig.side, symbol, sig.reason, sig.indicators)
             verdict = judge.evaluate(case)
             record({"event": "signal", "symbol": symbol, "side": sig.side,
