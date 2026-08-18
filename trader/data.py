@@ -4,7 +4,11 @@ from datetime import datetime, timedelta, timezone
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
-from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
+from alpaca.data.requests import (
+    CryptoBarsRequest,
+    StockBarsRequest,
+    StockLatestQuoteRequest,
+)
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from . import config
@@ -56,6 +60,53 @@ def get_crypto_bars(symbols: list[str]) -> dict[str, list[dict]]:
     )
     response = _get_crypto_client().get_crypto_bars(request)
     return _to_dicts(response, symbols)
+
+
+def get_hourly_bars(symbols: list[str]) -> dict[str, list[dict]]:
+    """Recent 1-hour bars for stocks. Used for multi-timeframe confirmation."""
+    start = datetime.now(timezone.utc) - timedelta(days=10)
+    request = StockBarsRequest(
+        symbol_or_symbols=symbols,
+        timeframe=TimeFrame(1, TimeFrameUnit.Hour),
+        start=start,
+        feed=DataFeed.IEX,
+    )
+    response = _get_client().get_stock_bars(request)
+    return _to_dicts(response, symbols)
+
+
+def get_crypto_hourly_bars(symbols: list[str]) -> dict[str, list[dict]]:
+    """Recent 1-hour bars for crypto pairs."""
+    start = datetime.now(timezone.utc) - timedelta(days=10)
+    request = CryptoBarsRequest(
+        symbol_or_symbols=symbols,
+        timeframe=TimeFrame(1, TimeFrameUnit.Hour),
+        start=start,
+    )
+    response = _get_crypto_client().get_crypto_bars(request)
+    return _to_dicts(response, symbols)
+
+
+def get_latest_quotes(symbols: list[str]) -> dict[str, dict]:
+    """Return latest bid/ask quote for each stock symbol."""
+    request = StockLatestQuoteRequest(symbol_or_symbols=symbols, feed=DataFeed.IEX)
+    response = _get_client().get_stock_latest_quote(request)
+    out: dict[str, dict] = {}
+    for symbol in symbols:
+        quote = response.get(symbol)
+        if quote is None:
+            continue
+        bid = float(getattr(quote, "bid_price", 0) or 0)
+        ask = float(getattr(quote, "ask_price", 0) or 0)
+        mid = (bid + ask) / 2 if bid and ask else 0
+        out[symbol] = {
+            "bid": bid,
+            "ask": ask,
+            "bid_size": float(getattr(quote, "bid_size", 0) or 0),
+            "ask_size": float(getattr(quote, "ask_size", 0) or 0),
+            "spread_pct": ((ask - bid) / mid * 100) if mid else 0,
+        }
+    return out
 
 
 def _to_dicts(response, symbols: list[str]) -> dict[str, list[dict]]:

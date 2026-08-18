@@ -160,10 +160,18 @@ def tick_crypto(judge: JudgeBase, news_client: NewsClient, scanner: Scanner,
                 account: dict, positions: dict):
     """Evaluate crypto watchlist — runs every POLL_INTERVAL_SECONDS."""
     crypto_bars = data.get_crypto_bars(config.CRYPTO_WATCHLIST)
+    try:
+        crypto_hourly = data.get_crypto_hourly_bars(config.CRYPTO_WATCHLIST)
+    except Exception:
+        log.debug("crypto hourly bars fetch failed, continuing without")
+        crypto_hourly = {}
     for symbol in config.CRYPTO_WATCHLIST:
         bars = crypto_bars.get(symbol, [])
         pos_symbol = symbol.replace("/", "")
-        sig = signals.evaluate(symbol, bars, holding=pos_symbol in positions)
+        sig = signals.evaluate(
+            symbol, bars, holding=pos_symbol in positions,
+            hourly_bars=crypto_hourly.get(symbol),
+        )
         if sig is None:
             continue
         if _on_cooldown(symbol, sig.reason):
@@ -193,10 +201,26 @@ def tick_stocks(watchlist: list[str], judge: JudgeBase, news_client: NewsClient,
     if not watchlist:
         return
     stock_bars = data.get_bars(watchlist)
+    try:
+        quotes = data.get_latest_quotes(watchlist)
+    except Exception:
+        log.debug("quote fetch failed, continuing without")
+        quotes = {}
+    try:
+        hourly = data.get_hourly_bars(watchlist)
+    except Exception:
+        log.debug("hourly bars fetch failed, continuing without")
+        hourly = {}
+    spy_bars = stock_bars.get("SPY", [])
     for symbol in watchlist:
         bars = stock_bars.get(symbol, [])
         pos_symbol = symbol.replace("/", "")
-        sig = signals.evaluate(symbol, bars, holding=pos_symbol in positions)
+        sig = signals.evaluate(
+            symbol, bars, holding=pos_symbol in positions,
+            quote=quotes.get(symbol),
+            benchmark_bars=spy_bars if symbol != "SPY" else None,
+            hourly_bars=hourly.get(symbol),
+        )
         if sig is None:
             continue
         if _on_cooldown(symbol, sig.reason):

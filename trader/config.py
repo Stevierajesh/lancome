@@ -32,6 +32,25 @@ MOMENTUM_PERIOD = 5                  # rate of change over last 5 bars
 MOMENTUM_BUY_THRESHOLD = 1.5         # +1.5% over MOMENTUM_PERIOD bars
 MOMENTUM_SELL_THRESHOLD = 2.0        # -2% triggers sell if holding
 
+# Signal parameters — VWAP
+VWAP_DEVIATION_BUY_PCT = -1.5        # buy when price is 1.5%+ below VWAP (mean reversion)
+VWAP_DEVIATION_SELL_PCT = 2.0        # sell when price is 2%+ above VWAP (overextended)
+
+# Signal parameters — relative volume (time-of-day)
+RELATIVE_VOLUME_TOD_THRESHOLD = 3.0  # 3x normal volume for this time slot
+
+# Signal parameters — bid/ask pressure
+BID_ASK_IMBALANCE_THRESHOLD = 0.70   # 70%+ on one side = directional pressure
+SPREAD_MAX_PCT = 0.3                 # ignore quotes with spread > 0.3%
+
+# Signal parameters — sector correlation break
+CORRELATION_BREAK_PCT = 1.5          # symbol diverges from benchmark by 1.5%+
+CORRELATION_LOOKBACK = 10            # compare returns over last 10 bars
+
+# Signal parameters — multi-timeframe
+HOURLY_SMA_FAST = 5
+HOURLY_SMA_SLOW = 13
+
 # Risk parameters
 MAX_POSITION_PCT = 0.10              # max 10% of equity per position
 MAX_OPEN_POSITIONS = 4
