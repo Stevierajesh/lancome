@@ -80,4 +80,8 @@ SCANNER_ENTRY_TTL_SECONDS = 1800     # drop symbols after 30 min of no activity
 NEWS_STREAM_ENABLED = True
 NEWS_LOOKBACK_ARTICLES = 5
 
-LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+# Overridable so the test suite doesn't append to the running bot's logs.
+LOG_DIR = os.environ.get(
+    "LANCOME_LOG_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"),
+)
