@@ -4,146 +4,87 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lancome</title>
+<link rel="stylesheet" href="/static/css/dashboard.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<style>
-  :root {
-    --bg: #0e1117; --panel: #161b24; --panel2: #1c2330; --border: #2a3242;
-    --text: #d7dde8; --muted: #7d8797; --green: #3fb27f; --red: #e05d5d;
-    --accent: #5b9dd9; --amber: #d9a53f;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 14px/1.5 "SF Mono", "Cascadia Code", Consolas, monospace; }
-  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px;
-           background: var(--panel); border-bottom: 1px solid var(--border); }
-  header h1 { font-size: 16px; margin: 0; }
-  header nav a { color: var(--muted); text-decoration: none; margin-left: 14px; }
-  header nav a:hover, header nav a.active { color: var(--accent); }
-  #refresh-info { color: var(--muted); font-size: 12px; }
-  #bot-timer .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-                    margin-right: 6px; vertical-align: middle; }
-  #bot-timer .dot.on { background: var(--green); }
-  #bot-timer .dot.off { background: var(--red); }
-  #bot-timer .count { color: var(--accent); }
-  main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-           gap: 12px; margin-bottom: 20px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-          padding: 12px 16px; }
-  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase;
-                 letter-spacing: 0.5px; }
-  .card .value { font-size: 20px; margin-top: 4px; }
-  .pos { color: var(--green); } .neg { color: var(--red); }
-  .grid2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 20px; }
-  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
-  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-            padding: 16px; }
-  section h2 { font-size: 13px; margin: 0 0 12px; color: var(--muted);
-               text-transform: uppercase; letter-spacing: 0.5px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; color: var(--muted); font-weight: normal; font-size: 11px;
-       text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-  td { padding: 6px 8px; border-bottom: 1px solid var(--panel2); vertical-align: top; }
-  tr:hover td { background: var(--panel2); }
-  .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  .filters select, .filters input, .filters button {
-    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 13px; }
-  .filters input[type=text] { flex: 1; min-width: 180px; }
-  .filters button { cursor: pointer; }
-  .filters button:hover { border-color: var(--accent); }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
-  .badge.entry   { background: #1d3a2d; color: var(--green); }
-  .badge.exit    { background: #3a1d1d; color: var(--red); }
-  .badge.signal  { background: #1d2b3a; color: var(--accent); }
-  .badge.news    { background: #2d1d3a; color: #b39ddb; }
-  .badge.scanner { background: #1d3a3a; color: #4dd0e1; }
-  .badge.approve { background: #1d3a2d; color: var(--green); }
-  .badge.veto    { background: #3a2f1d; color: var(--amber); }
-  .reason { color: var(--muted); font-size: 12px; }
-  details summary { cursor: pointer; color: var(--accent); font-size: 12px; }
-  details pre { background: var(--bg); padding: 8px; border-radius: 6px; overflow-x: auto;
-                font-size: 11px; margin: 6px 0 0; }
-  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px;
-           color: var(--muted); font-size: 12px; }
-  .pager button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-                  border-radius: 6px; padding: 4px 12px; cursor: pointer; }
-  .pager button:disabled { opacity: 0.4; cursor: default; }
-  .empty { color: var(--muted); padding: 20px; text-align: center; }
-  #alpaca-error { background: #3a2f1d; color: var(--amber); border: 1px solid #5a4a2d;
-                  border-radius: 8px; padding: 10px 16px; margin-bottom: 16px; display: none;
-                  font-size: 13px; }
-</style>
 </head>
 <body>
+
 <header>
   <h1>lancome</h1>
   <nav>
     <a href="/" class="active">Dashboard</a>
     <a href="/docs">Docs</a>
   </nav>
-  <span id="bot-timer" style="margin-left:auto; font-size:13px;"></span>
-  <span id="refresh-info" style="margin-left:16px;"></span>
+  <span id="bot-timer"></span>
+  <span id="refresh-info"></span>
 </header>
+
 <main>
   <div id="alpaca-error"></div>
 
-  <div class="cards" id="cards"></div>
+  <!-- stat cards, grouped: account / activity -->
+  <div id="stats"></div>
 
-  <div class="grid2">
-    <section>
-      <h2>Equity
-        <select id="history-period" style="float:right; background:var(--panel2); color:var(--text);
-                border:1px solid var(--border); border-radius:6px;">
-          <option value="1D|5Min">1 day</option>
-          <option value="1W|1H">1 week</option>
-          <option value="1M|1D" selected>1 month</option>
-          <option value="3M|1D">3 months</option>
-        </select>
-      </h2>
-      <canvas id="equity-chart" height="90"></canvas>
-    </section>
-    <section>
-      <h2>Open Positions</h2>
-      <div id="positions"></div>
-    </section>
-  </div>
+  <div class="panels">
+    <div class="col">
+      <section>
+        <h2>
+          Equity
+          <span class="spacer"></span>
+          <select id="history-period">
+            <option value="1D|5Min">1 day</option>
+            <option value="1W|1H">1 week</option>
+            <option value="1M|1D" selected>1 month</option>
+            <option value="3M|1D">3 months</option>
+          </select>
+        </h2>
+        <div style="height:180px"><canvas id="equity-chart"></canvas></div>
+      </section>
 
-  <div class="grid2">
-    <section>
-      <h2>Dynamic Watchlist <span id="watchlist-count" style="color:var(--muted); font-size:11px"></span></h2>
-      <div id="watchlist"></div>
-    </section>
-    <section>
-      <h2>Recent News</h2>
-      <div id="news-feed"></div>
-    </section>
+      <section>
+        <h2>Dynamic Watchlist <span class="count" id="watchlist-count"></span></h2>
+        <div id="watchlist"></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section>
+        <h2>Open Positions</h2>
+        <div id="positions"></div>
+      </section>
+
+      <section>
+        <h2>Recent News</h2>
+        <div class="list" id="news-feed"></div>
+      </section>
+    </div>
   </div>
 
   <section>
-    <h2>Event Feed</h2>
+    <h2>Event Feed <span class="count" id="event-count"></span></h2>
+
     <div class="filters">
+      <div class="segmented" id="f-event">
+        <button data-event="" class="active">All</button>
+        <button data-event="signal">Signals</button>
+        <button data-event="entry">Entries</button>
+        <button data-event="exit">Exits</button>
+        <button data-event="news">News</button>
+        <button data-event="scanner">Scanner</button>
+      </div>
       <select id="f-symbol"><option value="">All symbols</option></select>
-      <select id="f-event">
-        <option value="">All events</option>
-        <option value="signal">signal</option>
-        <option value="entry">entry</option>
-        <option value="exit">exit</option>
-        <option value="news">news</option>
-        <option value="scanner">scanner</option>
-      </select>
       <select id="f-decision">
         <option value="">All verdicts</option>
         <option value="approve">approved</option>
         <option value="veto">vetoed</option>
       </select>
-      <input type="text" id="f-q" placeholder="Search anything (rule, reason, indicator…)">
+      <input type="text" id="f-q" placeholder="Search rule, reason, indicator…">
       <button id="f-clear">Clear</button>
-      <label style="color:var(--muted); align-self:center; font-size:12px;">
-        <input type="checkbox" id="auto-refresh" checked> auto-refresh
-      </label>
+      <label><input type="checkbox" id="auto-refresh" checked> auto-refresh</label>
     </div>
+
     <div id="events"></div>
+
     <div class="pager">
       <button id="pg-prev">‹ Prev</button>
       <span id="pg-info"></span>
@@ -152,202 +93,6 @@
   </section>
 </main>
 
-<script>
-const $ = (id) => document.getElementById(id);
-const PAGE_SIZE = 50;
-let offset = 0, total = 0, chart = null;
-
-const fmtUsd = (v) => v == null ? "—" :
-  v.toLocaleString("en-US", { style: "currency", currency: "USD" });
-const fmtPct = (v) => v == null ? "—" : (v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%";
-const fmtTime = (ts) => ts ? new Date(ts).toLocaleString() : "—";
-const cls = (v) => v == null ? "" : v >= 0 ? "pos" : "neg";
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
-  (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
-
-function card(label, value, klass = "") {
-  return `<div class="card"><div class="label">${label}</div>
-          <div class="value ${klass}">${value}</div></div>`;
-}
-
-let botStatus = null;
-
-function renderBotTimer() {
-  const el = $("bot-timer");
-  if (!botStatus) { el.innerHTML = '<span class="dot off"></span>bot: no heartbeat yet'; return; }
-  const next = new Date(botStatus.next_tick).getTime();
-  const remaining = Math.round((next - Date.now()) / 1000);
-  const grace = 90; // seconds past next_tick before we call it offline
-  if (remaining < -grace) {
-    const last = fmtTime(botStatus.last_tick);
-    el.innerHTML = `<span class="dot off"></span>bot offline? last tick ${last}`;
-  } else if (remaining <= 0) {
-    el.innerHTML = `<span class="dot on"></span>bot ticking now…`;
-  } else {
-    const m = Math.floor(remaining / 60), sec = String(remaining % 60).padStart(2, "0");
-    el.innerHTML = `<span class="dot on"></span>next tick in <span class="count">${m}:${sec}</span>` +
-      (botStatus.stocks_open ? "" : ' <span style="color:var(--muted)">(crypto only)</span>');
-  }
-}
-setInterval(renderBotTimer, 1000);
-
-async function loadSummary() {
-  const s = await (await fetch("/api/summary")).json();
-  const a = s.account, st = s.stats;
-  botStatus = s.bot;
-  renderBotTimer();
-  const err = $("alpaca-error");
-  if (s.error) { err.style.display = "block";
-    err.textContent = "⚠ Alpaca unavailable (stats limited to local logs): " + s.error;
-  } else err.style.display = "none";
-
-  const dayPl = a ? a.equity - a.last_equity : null;
-  const dayPlPct = a && a.last_equity ? dayPl / a.last_equity : null;
-  $("cards").innerHTML =
-    card("Equity", fmtUsd(a?.equity)) +
-    card("Cash", fmtUsd(a?.cash)) +
-    card("Day P/L", `${fmtUsd(dayPl)} <span style="font-size:13px">${fmtPct(dayPlPct)}</span>`, cls(dayPl)) +
-    card("Signals", st.signals) +
-    card("Approval rate", st.approval_rate == null ? "—" : (st.approval_rate * 100).toFixed(0) + "%") +
-    card("Avg confidence", st.avg_confidence ?? "—") +
-    card("Entries / Exits", `${st.entries} / ${st.exits}`) +
-    card("News events", st.news_events ?? 0) +
-    card("Scanner hits", st.scanner_discoveries ?? 0);
-
-  const posDiv = $("positions");
-  const entries = Object.entries(s.positions || {});
-  if (!entries.length) { posDiv.innerHTML = '<div class="empty">No open positions</div>'; return; }
-  posDiv.innerHTML = `<table><tr><th>Sym</th><th>Qty</th><th>Entry</th><th>Now</th><th>P/L</th></tr>` +
-    entries.map(([sym, p]) => `<tr><td>${esc(sym)}</td><td>${p.qty}</td>
-      <td>${fmtUsd(p.avg_entry_price)}</td><td>${fmtUsd(p.current_price)}</td>
-      <td class="${cls(p.unrealized_plpc)}">${fmtPct(p.unrealized_plpc)}</td></tr>`).join("") +
-    "</table>";
-}
-
-async function loadHistory() {
-  const [period, timeframe] = $("history-period").value.split("|");
-  const r = await fetch(`/api/history?period=${period}&timeframe=${timeframe}`);
-  if (!r.ok) return;
-  const h = await r.json();
-  const labels = (h.timestamp || []).map((t) => new Date(t * 1000).toLocaleDateString(undefined,
-    { month: "short", day: "numeric", hour: timeframe.endsWith("Min") || timeframe === "1H" ? "numeric" : undefined }));
-  if (chart) chart.destroy();
-  chart = new Chart($("equity-chart"), {
-    type: "line",
-    data: { labels, datasets: [{ data: h.equity, borderColor: "#5b9dd9",
-      backgroundColor: "rgba(91,157,217,0.08)", fill: true, pointRadius: 0, tension: 0.2 }] },
-    options: { plugins: { legend: { display: false } },
-      scales: { x: { ticks: { color: "#7d8797", maxTicksLimit: 8 }, grid: { color: "#1c2330" } },
-                y: { ticks: { color: "#7d8797" }, grid: { color: "#1c2330" } } } }
-  });
-}
-
-function eventRow(e) {
-  const v = e.verdict;
-  let detail = "";
-  if (e.event === "signal") {
-    detail = `${esc(e.side)} — ${esc(e.rule)}<br>
-      <span class="reason">${esc(JSON.stringify(e.indicators))}</span>`;
-  } else if (e.event === "entry") {
-    detail = `bought ${e.qty} @ ${fmtUsd(e.price)}<br><span class="reason">${esc(e.rule)}</span>`;
-  } else if (e.event === "news") {
-    detail = `<span class="reason">${esc(e.headline)}</span>`;
-  } else if (e.event === "scanner") {
-    const meta = e.scanner_meta || {};
-    const pct = meta.pct_change != null ? ` (${meta.pct_change > 0 ? "+" : ""}${meta.pct_change.toFixed(1)}%)` : "";
-    detail = `discovered${pct}`;
-  } else if (e.event === "exit") {
-    const pl = e.position?.unrealized_plpc;
-    detail = `${esc(e.reason)}` + (pl != null ?
-      ` <span class="${cls(pl)}">(${fmtPct(pl)})</span>` : "");
-  }
-  const verdict = v ? `<span class="badge ${esc(v.decision)}">${esc(v.decision)}
-      ${(v.confidence * 100).toFixed(0)}%</span><br><span class="reason">${esc(v.reason)}</span>` : "";
-  return `<tr>
-    <td style="white-space:nowrap">${fmtTime(e.ts)}</td>
-    <td><span class="badge ${esc(e.event)}">${esc(e.event)}</span></td>
-    <td>${esc(e.symbol)}</td>
-    <td>${detail}</td>
-    <td>${verdict}</td>
-    <td><details><summary>raw</summary><pre>${esc(JSON.stringify(e, null, 2))}</pre></details></td>
-  </tr>`;
-}
-
-async function loadEvents() {
-  const params = new URLSearchParams({
-    symbol: $("f-symbol").value, event: $("f-event").value,
-    decision: $("f-decision").value, q: $("f-q").value,
-    limit: PAGE_SIZE, offset,
-  });
-  const d = await (await fetch("/api/events?" + params)).json();
-  total = d.total;
-
-  const sel = $("f-symbol"), current = sel.value;
-  sel.innerHTML = '<option value="">All symbols</option>' +
-    d.symbols.map((s) => `<option${s === current ? " selected" : ""}>${esc(s)}</option>`).join("");
-
-  $("events").innerHTML = d.events.length
-    ? `<table><tr><th>Time</th><th>Event</th><th>Sym</th><th>Detail</th>
-       <th>Judge</th><th></th></tr>` + d.events.map(eventRow).join("") + "</table>"
-    : '<div class="empty">No events match. The bot writes events to logs/trades.jsonl as it runs.</div>';
-
-  $("pg-info").textContent = total ? `${offset + 1}–${Math.min(offset + PAGE_SIZE, total)} of ${total}` : "0 events";
-  $("pg-prev").disabled = offset === 0;
-  $("pg-next").disabled = offset + PAGE_SIZE >= total;
-}
-
-async function loadScanner() {
-  try {
-    const d = await (await fetch("/api/scanner")).json();
-    const wl = d.watchlist || [];
-    $("watchlist-count").textContent = wl.length ? `(${wl.length} symbols)` : "";
-    if (!wl.length) { $("watchlist").innerHTML = '<div class="empty">Scanner idle</div>'; return; }
-    $("watchlist").innerHTML = `<table><tr><th>Sym</th><th>Source</th><th>Score</th><th>Info</th></tr>` +
-      wl.map((w) => {
-        const meta = w.scanner_meta || {};
-        const pct = meta.pct_change != null ? `${meta.pct_change > 0 ? "+" : ""}${meta.pct_change.toFixed(1)}%` : "";
-        const info = [pct, meta.volume ? `vol ${meta.volume.toLocaleString()}` : ""].filter(Boolean).join(", ");
-        return `<tr><td>${esc(w.symbol)}</td><td><span class="badge ${esc(w.source)}">${esc(w.source)}</span></td>
-          <td>${w.score}</td><td class="reason">${esc(info)}</td></tr>`;
-      }).join("") + "</table>";
-  } catch(e) { $("watchlist").innerHTML = '<div class="empty">Scanner unavailable</div>'; }
-}
-
-async function loadNews() {
-  try {
-    const d = await (await fetch("/api/news?limit=15")).json();
-    const items = d.events || [];
-    if (!items.length) { $("news-feed").innerHTML = '<div class="empty">No news yet</div>'; return; }
-    $("news-feed").innerHTML = items.map((n) =>
-      `<div style="padding:4px 0; border-bottom:1px solid var(--panel2)">
-        <span style="color:var(--accent)">${esc(n.symbol)}</span>
-        <span class="reason">${esc(n.headline)}</span>
-        <div style="font-size:11px; color:var(--muted)">${fmtTime(n.created_at || n.ts)}</div>
-      </div>`).join("");
-  } catch(e) { $("news-feed").innerHTML = '<div class="empty">News unavailable</div>'; }
-}
-
-function refreshAll() {
-  loadSummary(); loadHistory(); loadEvents(); loadScanner(); loadNews();
-  $("refresh-info").textContent = "updated " + new Date().toLocaleTimeString();
-}
-
-let debounce;
-["f-symbol", "f-event", "f-decision"].forEach((id) =>
-  $(id).addEventListener("change", () => { offset = 0; loadEvents(); }));
-$("f-q").addEventListener("input", () => {
-  clearTimeout(debounce); debounce = setTimeout(() => { offset = 0; loadEvents(); }, 300);
-});
-$("f-clear").addEventListener("click", () => {
-  ["f-symbol", "f-event", "f-decision", "f-q"].forEach((id) => $(id).value = "");
-  offset = 0; loadEvents();
-});
-$("pg-prev").addEventListener("click", () => { offset = Math.max(0, offset - PAGE_SIZE); loadEvents(); });
-$("pg-next").addEventListener("click", () => { offset += PAGE_SIZE; loadEvents(); });
-$("history-period").addEventListener("change", loadHistory);
-
-refreshAll();
-setInterval(() => { if ($("auto-refresh").checked) refreshAll(); }, 30000);
-</script>
+<script type="module" src="/static/js/dashboard.js"></script>
 </body>
 </html>
