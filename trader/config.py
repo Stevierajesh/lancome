@@ -52,7 +52,10 @@ HOURLY_SMA_FAST = 5
 HOURLY_SMA_SLOW = 13
 
 # Risk parameters
-MAX_POSITION_PCT = 0.10              # max 10% of equity per position
+# Keep MAX_POSITION_PCT * MAX_OPEN_POSITIONS under 1.0 — _entry_budget clamps to
+# available cash, so anything over 100% just starves the last few slots into
+# dust orders (13 x 10% = 130% meant an effective cap of ~10).
+MAX_POSITION_PCT = 0.07              # max 7% of equity per position (13 x 7% = 91%)
 MAX_OPEN_POSITIONS = 13
 DAILY_LOSS_LIMIT_PCT = 0.02          # stop trading if down 2% on the day
 STOP_LOSS_PCT = 0.02                 # exit position at -2%

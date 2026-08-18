@@ -57,6 +57,21 @@ _signal_cooldowns: dict[str, float] = {}
 _untradable: set[str] = set()
 
 
+def _refresh_portfolio(account: dict, positions: dict) -> tuple[dict, dict]:
+    """Re-read the book immediately before a judge call.
+
+    A tick fetches account/positions once and then loops, so by the fourth
+    entry of a cycle the judge was being shown the cash and holdings from
+    before the first three orders. Two REST calls are noise next to a ~22s
+    judge round-trip. Falls back to the tick snapshot if the fetch fails.
+    """
+    try:
+        return broker.get_account(), broker.get_positions()
+    except Exception:
+        log.debug("portfolio refresh failed — judging against tick snapshot")
+        return account, positions
+
+
 def _on_cooldown(symbol: str, reason: str) -> bool:
     key = f"{symbol}:{reason}"
     expires = _signal_cooldowns.get(key, 0)
@@ -175,6 +190,7 @@ def execute_if_approved(case: CaseFile, verdict: dict, positions: dict, account:
         if risk.daily_loss_breached(account):
             log.info("skipping %s buy: daily loss limit", symbol)
             return
+        qty = notional = None
         if is_crypto:
             notional = risk.size_entry_notional(account, positions)
             if notional is None:
@@ -203,7 +219,8 @@ def execute_if_approved(case: CaseFile, verdict: dict, positions: dict, account:
             record_trade("buy", symbol, fill or signal_price, sig.reason,
                          account=account, confidence=verdict["confidence"],
                          reason=verdict["reason"], qty=qty)
-        positions[pos_symbol] = {"qty": 0}
+        _mark_opened(account, positions, pos_symbol, qty=qty, notional=notional,
+                     price=fill or signal_price)
     else:
         pos = positions.get(pos_symbol, {})
         order = _submit(broker.close_position, pos_symbol)
@@ -218,6 +235,31 @@ def execute_if_approved(case: CaseFile, verdict: dict, positions: dict, account:
                      account=account, confidence=verdict["confidence"],
                      reason=verdict["reason"], qty=pos.get("qty"))
         positions.pop(pos_symbol, None)
+
+
+def _mark_opened(account: dict, positions: dict, pos_symbol: str,
+                 qty=None, notional=None, price=None):
+    """Record a just-opened position in the in-memory book.
+
+    This used to write `{"qty": 0}`, which kept the MAX_OPEN_POSITIONS count
+    honest but told the judge the position held nothing — so a portfolio that
+    was 30% deployed read as untouched. Fill data is available now, so use it,
+    and draw the spent cash down too. A refresh from the broker supersedes this
+    on the next signal; it only has to be right for the rest of the tick.
+    """
+    spent = notional if notional is not None else (qty or 0) * (price or 0)
+    if price and (qty or notional):
+        positions[pos_symbol] = {
+            "qty": qty if qty is not None else (spent / price if price else 0),
+            "avg_entry_price": price,
+            "current_price": price,
+            "unrealized_plpc": 0.0,
+            "market_value": spent,
+        }
+    else:
+        positions[pos_symbol] = {"qty": qty or 0}
+    if spent:
+        account["cash"] = max(0.0, account.get("cash", 0.0) - spent)
 
 
 def _submit(fn, symbol: str, *args):
@@ -268,6 +310,7 @@ def tick_crypto(judge: JudgeBase, news_client: NewsClient, scanner: Scanner,
                 continue
             if _on_cooldown(symbol, sig.reason):
                 continue
+            account, positions = _refresh_portfolio(account, positions)
             case = CaseFile(
                 symbol=symbol,
                 bars=bars,
@@ -323,6 +366,7 @@ def tick_stocks(watchlist: list[str], judge: JudgeBase, news_client: NewsClient,
                 continue
             if _on_cooldown(symbol, sig.reason):
                 continue
+            account, positions = _refresh_portfolio(account, positions)
             case = enrich(symbol, scanner, news_client, account, positions)
             case.signal = sig
             case.bars = bars
