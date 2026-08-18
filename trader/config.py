@@ -18,12 +18,19 @@ POLL_INTERVAL_SECONDS = 300          # 5 minutes
 BAR_TIMEFRAME_MINUTES = 5
 LOOKBACK_BARS = 100                  # ~1.5 trading days of 5-min bars
 
-# Signal parameters
+# Signal parameters — trend (slow)
 SMA_FAST = 9
 SMA_SLOW = 21
 RSI_PERIOD = 14
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
+
+# Signal parameters — reactive (fast)
+VOLUME_SPIKE_THRESHOLD = 3.0          # current bar volume >= 3x the 20-bar average
+GAP_UP_THRESHOLD = 1.5               # open >= 1.5% above previous close
+MOMENTUM_PERIOD = 5                  # rate of change over last 5 bars
+MOMENTUM_BUY_THRESHOLD = 2.0         # +2% over MOMENTUM_PERIOD bars
+MOMENTUM_SELL_THRESHOLD = 2.0        # -2% triggers sell if holding
 
 # Risk parameters
 MAX_POSITION_PCT = 0.10              # max 10% of equity per position

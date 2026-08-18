@@ -200,15 +200,19 @@ def process_event(event: Event, judge: JudgeBase, news_client: NewsClient,
         scanner.add_from_news(event.symbol, event.payload.get("headline", ""))
         record({"event": "news", "symbol": event.symbol, **event.payload})
 
-        # If we hold this symbol, immediately check if news warrants an exit
-        pos_symbol = event.symbol.replace("/", "")
-        if pos_symbol in positions:
-            log.info("news on held position %s — enriching", event.symbol)
-            case = enrich(event.symbol, scanner, news_client, account, positions)
+        symbol = event.symbol
+        pos_symbol = symbol.replace("/", "")
+        is_crypto = pos_symbol in CRYPTO_BY_POS_SYMBOL
+
+        if is_crypto or broker.market_is_open():
+            log.info("news on %s — evaluating", symbol)
+            case = enrich(symbol, scanner, news_client, account, positions)
             if case.signal:
                 verdict = judge.evaluate(case)
-                record({"event": "signal", "symbol": event.symbol, "side": case.signal.side,
+                record({"event": "signal", "symbol": symbol, "side": case.signal.side,
                         "rule": case.signal.reason, "verdict": verdict, "trigger": "news"})
+                log.info("news-triggered judge: %s (%.2f) — %s",
+                         verdict["decision"], verdict["confidence"], verdict["reason"])
                 execute_if_approved(case, verdict, positions, account)
 
     elif event.type == EventType.SCANNER_HIT:
@@ -243,7 +247,7 @@ def main():
         while True:
             now = time.time()
 
-            # --- Timer: scanner poll ---
+            # --- Timer: scanner poll + news fallback ---
             if now - last_scan > config.SCANNER_INTERVAL_SECONDS:
                 try:
                     stocks_open = broker.market_is_open()
@@ -258,6 +262,11 @@ def main():
                     write_scanner_state(scanner)
                 except Exception:
                     log.exception("scanner poll failed")
+
+                # REST news fallback when WebSocket is down
+                if news_worker and not news_worker.is_streaming:
+                    news_worker.poll_rest(news_client)
+
                 last_scan = now
 
             # --- Timer: crypto tick (always) ---
