@@ -53,7 +53,7 @@ HOURLY_SMA_SLOW = 13
 
 # Risk parameters
 MAX_POSITION_PCT = 0.10              # max 10% of equity per position
-MAX_OPEN_POSITIONS = 4
+MAX_OPEN_POSITIONS = 13
 DAILY_LOSS_LIMIT_PCT = 0.02          # stop trading if down 2% on the day
 STOP_LOSS_PCT = 0.02                 # exit position at -2%
 TAKE_PROFIT_PCT = 0.03               # exit position at +3%

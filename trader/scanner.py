@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -13,6 +14,22 @@ from alpaca.data.requests import MostActivesRequest, MarketMoversRequest
 from . import config
 
 log = logging.getLogger("scanner")
+
+_US_EQUITY = re.compile(r"^[A-Z][A-Z0-9.]{0,5}$")
+
+
+def is_us_equity(symbol: str) -> bool:
+    """Whether Alpaca's US stocks endpoints will accept this ticker.
+
+    Benzinga tags stories with Toronto listings ("TSX:ERD", "TSX:PLZ/UN") and
+    crypto pairs ("BTCUSD", "HYPEUSD"). A single one of those in a multi-symbol
+    bars request 400s the *entire* batch, so the whole stock tick dies with it.
+    """
+    if not symbol or not _US_EQUITY.match(symbol):
+        return False
+    if symbol.endswith("USD") and len(symbol) > 3:
+        return False  # crypto pair in position form
+    return True
 
 
 @dataclass
@@ -64,6 +81,9 @@ class Scanner:
 
     def add_from_news(self, symbol: str, headline: str):
         """Register a symbol surfaced by the news stream."""
+        if not is_us_equity(symbol):
+            log.debug("ignoring non-US-equity news symbol %s", symbol)
+            return
         is_new = self._add_or_refresh(symbol, "news")
         entry = self._watchlist.get(symbol)
         if entry:

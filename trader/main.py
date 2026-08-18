@@ -22,7 +22,7 @@ from .enrichment import CaseFile, enrich
 from .events import Event, EventType, event_queue
 from .judge import JudgeBase, create_judge
 from .news_stream import NewsStreamWorker
-from .scanner import Scanner
+from .scanner import Scanner, is_us_equity
 
 os.makedirs(config.LOG_DIR, exist_ok=True)
 logging.basicConfig(
@@ -50,6 +50,11 @@ CRYPTO_BY_POS_SYMBOL = {s.replace("/", ""): s for s in config.CRYPTO_WATCHLIST}
 # so the judge isn't spammed with identical setups every tick.
 SIGNAL_COOLDOWN_SECONDS = 1800
 _signal_cooldowns: dict[str, float] = {}
+
+# Symbols Alpaca refuses to trade (422 on submit). AIXC gapped 12%, the judge
+# approved it twice at ~20s a call, and both orders bounced. Once rejected, a
+# symbol is dropped for the rest of the session rather than re-judged.
+_untradable: set[str] = set()
 
 
 def _on_cooldown(symbol: str, reason: str) -> bool:
@@ -122,7 +127,7 @@ def record_trade(side: str, symbol: str, price, rule: str, account: dict | None 
 
 
 # ---------------------------------------------------------------------------
-# Hard exits (stop-loss / take-profit) — unchanged from original
+# Hard exits (stop-loss / take-profit)
 # ---------------------------------------------------------------------------
 
 def check_hard_exits(positions: dict, stocks_open: bool, account: dict):
@@ -130,11 +135,17 @@ def check_hard_exits(positions: dict, stocks_open: bool, account: dict):
         is_crypto = pos_symbol in CRYPTO_BY_POS_SYMBOL
         if not is_crypto and not stocks_open:
             continue
+        if "unrealized_plpc" not in pos:
+            continue  # placeholder written by a same-tick entry, not priced yet
         reason = risk.exit_reason(pos)
         if reason:
-            broker.close_position(pos_symbol)
-            record({"event": "exit", "symbol": pos_symbol, "reason": reason, "position": pos})
-            record_trade("sell", pos_symbol, pos.get("current_price"), reason,
+            order = _submit(broker.close_position, pos_symbol)
+            if order is False:
+                continue
+            fill = broker.wait_for_fill(order)
+            record({"event": "exit", "symbol": pos_symbol, "reason": reason,
+                    "fill_price": fill, "position": pos})
+            record_trade("sell", pos_symbol, fill or pos.get("current_price"), reason,
                          account=account, qty=pos.get("qty"))
             del positions[pos_symbol]
 
@@ -144,7 +155,11 @@ def check_hard_exits(positions: dict, stocks_open: bool, account: dict):
 # ---------------------------------------------------------------------------
 
 def execute_if_approved(case: CaseFile, verdict: dict, positions: dict, account: dict):
-    """Place the trade if the judge approved and risk checks pass."""
+    """Place the trade if the judge approved and risk checks pass.
+
+    Broker rejections are contained here: a symbol Alpaca won't accept must not
+    take down the rest of the watchlist's evaluation cycle.
+    """
     sig = case.signal
     if sig is None:
         return
@@ -154,6 +169,7 @@ def execute_if_approved(case: CaseFile, verdict: dict, positions: dict, account:
     symbol = sig.symbol
     pos_symbol = symbol.replace("/", "")
     is_crypto = pos_symbol in CRYPTO_BY_POS_SYMBOL
+    signal_price = sig.indicators.get("price")
 
     if sig.side == "buy":
         if risk.daily_loss_breached(account):
@@ -163,32 +179,66 @@ def execute_if_approved(case: CaseFile, verdict: dict, positions: dict, account:
             notional = risk.size_entry_notional(account, positions)
             if notional is None:
                 return
-            broker.submit_crypto_order(symbol, "buy", notional)
+            order = _submit(broker.submit_crypto_order, symbol, "buy", notional)
+            if not order:
+                return
+            fill = broker.wait_for_fill(order)
             record({"event": "entry", "symbol": symbol, "notional": notional,
-                    "price": sig.indicators.get("price"), "rule": sig.reason})
-            record_trade("buy", symbol, sig.indicators.get("price"), sig.reason,
+                    "price": signal_price, "fill_price": fill, "rule": sig.reason})
+            record_trade("buy", symbol, fill or signal_price, sig.reason,
                          account=account, confidence=verdict["confidence"],
                          reason=verdict["reason"], notional=notional)
         else:
-            qty = risk.size_entry(account, positions, sig.indicators["price"])
+            if signal_price is None:
+                return
+            qty = risk.size_entry(account, positions, signal_price)
             if qty is None:
                 return
-            broker.submit_market_order(symbol, "buy", qty)
+            order = _submit(broker.submit_market_order, symbol, "buy", qty)
+            if not order:
+                return
+            fill = broker.wait_for_fill(order)
             record({"event": "entry", "symbol": symbol, "qty": qty,
-                    "price": sig.indicators["price"], "rule": sig.reason})
-            record_trade("buy", symbol, sig.indicators["price"], sig.reason,
+                    "price": signal_price, "fill_price": fill, "rule": sig.reason})
+            record_trade("buy", symbol, fill or signal_price, sig.reason,
                          account=account, confidence=verdict["confidence"],
                          reason=verdict["reason"], qty=qty)
         positions[pos_symbol] = {"qty": 0}
     else:
-        broker.close_position(pos_symbol)
-        record({"event": "exit", "symbol": symbol, "reason": f"signal: {sig.reason}",
-                "position": positions.get(pos_symbol)})
         pos = positions.get(pos_symbol, {})
-        record_trade("sell", symbol, pos.get("current_price"), sig.reason,
+        order = _submit(broker.close_position, pos_symbol)
+        # close_position returns None when the position was already gone; that
+        # is still a successful exit, so only a raised rejection aborts here.
+        if order is False:
+            return
+        fill = broker.wait_for_fill(order)
+        record({"event": "exit", "symbol": symbol, "reason": f"signal: {sig.reason}",
+                "fill_price": fill, "position": pos or None})
+        record_trade("sell", symbol, fill or pos.get("current_price"), sig.reason,
                      account=account, confidence=verdict["confidence"],
                      reason=verdict["reason"], qty=pos.get("qty"))
         positions.pop(pos_symbol, None)
+
+
+def _submit(fn, symbol: str, *args):
+    """Run a broker call, absorbing per-symbol rejections.
+
+    Returns the order, None when there was nothing to do, or False when the
+    order was rejected. Anything Alpaca refuses outright (422) gets the symbol
+    blocklisted so we stop paying ~20s of judge time to re-propose it.
+    """
+    try:
+        return fn(symbol, *args)
+    except broker.BrokerError as e:
+        status = broker.error_status(e)
+        if status == 422:
+            _untradable.add(symbol)
+            _untradable.add(symbol.replace("/", ""))
+            log.warning("%s rejected by broker (422) — blocklisted for this session", symbol)
+        else:
+            log.warning("order for %s failed (%s): %s", symbol, status, e)
+        record({"event": "rejected", "symbol": symbol, "status": status, "error": str(e)[:300]})
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -205,38 +255,46 @@ def tick_crypto(judge: JudgeBase, news_client: NewsClient, scanner: Scanner,
         log.debug("crypto hourly bars fetch failed, continuing without")
         crypto_hourly = {}
     for symbol in config.CRYPTO_WATCHLIST:
-        bars = crypto_bars.get(symbol, [])
-        pos_symbol = symbol.replace("/", "")
-        sig = signals.evaluate(
-            symbol, bars, holding=pos_symbol in positions,
-            hourly_bars=crypto_hourly.get(symbol),
-        )
-        if sig is None:
+        if symbol in _untradable:
             continue
-        if _on_cooldown(symbol, sig.reason):
-            continue
-        case = CaseFile(
-            symbol=symbol,
-            bars=bars,
-            signal=sig,
-            scanner_context=scanner.get_entry(symbol) or {},
-            portfolio={"account": account, "positions": positions},
-        )
-        log.info("signal: %s %s (%s)", sig.side, symbol, sig.reason)
-        verdict = judge.evaluate(case)
-        record({"event": "signal", "symbol": symbol, "side": sig.side,
-                "rule": sig.reason, "indicators": sig.indicators, "verdict": verdict})
-        log.info("judge: %s (%.2f) — %s", verdict["decision"], verdict["confidence"],
-                 verdict["reason"])
-        if verdict["decision"] == "approve":
-            execute_if_approved(case, verdict, positions, account)
-        else:
-            _set_cooldown(symbol, sig.reason)
+        try:
+            bars = crypto_bars.get(symbol, [])
+            pos_symbol = symbol.replace("/", "")
+            sig = signals.evaluate(
+                symbol, bars, holding=pos_symbol in positions,
+                hourly_bars=crypto_hourly.get(symbol),
+            )
+            if sig is None:
+                continue
+            if _on_cooldown(symbol, sig.reason):
+                continue
+            case = CaseFile(
+                symbol=symbol,
+                bars=bars,
+                signal=sig,
+                scanner_context=scanner.get_entry(symbol) or {},
+                portfolio={"account": account, "positions": positions},
+            )
+            log.info("signal: %s %s (%s)", sig.side, symbol, sig.reason)
+            verdict = judge.evaluate(case)
+            record({"event": "signal", "symbol": symbol, "side": sig.side,
+                    "rule": sig.reason, "indicators": sig.indicators, "verdict": verdict})
+            log.info("judge: %s (%.2f) — %s", verdict["decision"], verdict["confidence"],
+                     verdict["reason"])
+            if verdict["decision"] == "approve":
+                execute_if_approved(case, verdict, positions, account)
+            else:
+                _set_cooldown(symbol, sig.reason)
+        except Exception:
+            log.exception("evaluation failed for %s — skipping", symbol)
 
 
 def tick_stocks(watchlist: list[str], judge: JudgeBase, news_client: NewsClient,
                 scanner: Scanner, account: dict, positions: dict):
     """Evaluate stock watchlist — dynamic symbols from scanner + seed list."""
+    # The bars/quotes fetches below are batched, so one symbol Alpaca rejects
+    # takes the whole request down with it. Screen the list before asking.
+    watchlist = [s for s in watchlist if is_us_equity(s) and s not in _untradable]
     if not watchlist:
         return
     stock_bars = data.get_bars(watchlist)
@@ -252,31 +310,34 @@ def tick_stocks(watchlist: list[str], judge: JudgeBase, news_client: NewsClient,
         hourly = {}
     spy_bars = stock_bars.get("SPY", [])
     for symbol in watchlist:
-        bars = stock_bars.get(symbol, [])
-        pos_symbol = symbol.replace("/", "")
-        sig = signals.evaluate(
-            symbol, bars, holding=pos_symbol in positions,
-            quote=quotes.get(symbol),
-            benchmark_bars=spy_bars if symbol != "SPY" else None,
-            hourly_bars=hourly.get(symbol),
-        )
-        if sig is None:
-            continue
-        if _on_cooldown(symbol, sig.reason):
-            continue
-        case = enrich(symbol, scanner, news_client, account, positions)
-        case.signal = sig
-        case.bars = bars
-        log.info("signal: %s %s (%s) %s", sig.side, symbol, sig.reason, sig.indicators)
-        verdict = judge.evaluate(case)
-        record({"event": "signal", "symbol": symbol, "side": sig.side,
-                "rule": sig.reason, "indicators": sig.indicators, "verdict": verdict})
-        log.info("judge: %s (%.2f) — %s", verdict["decision"], verdict["confidence"],
-                 verdict["reason"])
-        if verdict["decision"] == "approve":
-            execute_if_approved(case, verdict, positions, account)
-        else:
-            _set_cooldown(symbol, sig.reason)
+        try:
+            bars = stock_bars.get(symbol, [])
+            pos_symbol = symbol.replace("/", "")
+            sig = signals.evaluate(
+                symbol, bars, holding=pos_symbol in positions,
+                quote=quotes.get(symbol),
+                benchmark_bars=spy_bars if symbol != "SPY" else None,
+                hourly_bars=hourly.get(symbol),
+            )
+            if sig is None:
+                continue
+            if _on_cooldown(symbol, sig.reason):
+                continue
+            case = enrich(symbol, scanner, news_client, account, positions)
+            case.signal = sig
+            case.bars = bars
+            log.info("signal: %s %s (%s) %s", sig.side, symbol, sig.reason, sig.indicators)
+            verdict = judge.evaluate(case)
+            record({"event": "signal", "symbol": symbol, "side": sig.side,
+                    "rule": sig.reason, "indicators": sig.indicators, "verdict": verdict})
+            log.info("judge: %s (%.2f) — %s", verdict["decision"], verdict["confidence"],
+                     verdict["reason"])
+            if verdict["decision"] == "approve":
+                execute_if_approved(case, verdict, positions, account)
+            else:
+                _set_cooldown(symbol, sig.reason)
+        except Exception:
+            log.exception("evaluation failed for %s — skipping", symbol)
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +353,9 @@ def process_event(event: Event, judge: JudgeBase, news_client: NewsClient,
         symbol = event.symbol
         pos_symbol = symbol.replace("/", "")
         is_crypto = pos_symbol in CRYPTO_BY_POS_SYMBOL
+
+        if symbol in _untradable or not (is_crypto or is_us_equity(symbol)):
+            return
 
         if is_crypto or broker.market_is_open():
             log.info("news on %s — evaluating", symbol)
@@ -329,6 +393,7 @@ def main():
              config.NEWS_STREAM_ENABLED)
 
     last_scan = 0.0
+    last_exit_check = 0.0
     last_crypto_tick = 0.0
     last_stock_tick = 0.0
     stocks_open = False
@@ -359,12 +424,25 @@ def main():
 
                 last_scan = now
 
+            # --- Timer: hard exits (stop-loss / take-profit) ---
+            # Runs once per cycle. The crypto and stock ticks share an interval,
+            # so when this lived inside both they fired seconds apart on
+            # independently fetched position dicts and raced to close the same
+            # symbol — the loser got a 403 that killed the whole tick.
+            if now - last_exit_check > config.POLL_INTERVAL_SECONDS:
+                try:
+                    account = broker.get_account()
+                    positions = broker.get_positions()
+                    check_hard_exits(positions, stocks_open, account)
+                except Exception:
+                    log.exception("hard exit check failed")
+                last_exit_check = now
+
             # --- Timer: crypto tick (always) ---
             if now - last_crypto_tick > config.POLL_INTERVAL_SECONDS:
                 try:
                     account = broker.get_account()
                     positions = broker.get_positions()
-                    check_hard_exits(positions, stocks_open, account)
                     tick_crypto(judge, news_client, scanner, account, positions)
                 except Exception:
                     log.exception("crypto tick failed")
@@ -375,7 +453,6 @@ def main():
                 try:
                     account = broker.get_account()
                     positions = broker.get_positions()
-                    check_hard_exits(positions, stocks_open, account)
                     # Merge seed watchlist + scanner discoveries
                     dynamic = list(set(config.WATCHLIST + scanner.get_watchlist()))
                     tick_stocks(dynamic, judge, news_client, scanner, account, positions)

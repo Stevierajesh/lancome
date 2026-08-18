@@ -1,7 +1,10 @@
 """Thin wrapper over the Alpaca paper-trading account."""
 
 import logging
+import time
 
+import requests
+from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
@@ -10,7 +13,25 @@ from . import config
 
 log = logging.getLogger("broker")
 
+# alpaca-py surfaces rejections as either APIError or a bare requests HTTPError
+# depending on the endpoint, so callers have to handle both.
+BrokerError = (APIError, requests.exceptions.HTTPError)
+
+# How long to wait for a market order to report a fill price before giving up
+# and falling back to the signal price.
+FILL_POLL_SECONDS = 3.0
+FILL_POLL_INTERVAL = 0.3
+
 _client = None
+
+
+def error_status(exc) -> int | None:
+    """HTTP status behind a broker exception, or None if it isn't one."""
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        return int(status)
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None)
 
 
 def get_client() -> TradingClient:
@@ -72,6 +93,46 @@ def submit_crypto_order(symbol: str, side: str, notional: float):
 
 
 def close_position(symbol: str):
-    result = get_client().close_position(symbol)
+    """Close a position. Returns None if it was already gone.
+
+    Two code paths can race to close the same symbol (a hard exit and a
+    judge-approved sell, or a tick and a news event), and Alpaca answers the
+    loser with 403/404. That is a no-op, not a failure worth aborting for.
+    """
+    try:
+        result = get_client().close_position(symbol)
+    except BrokerError as e:
+        if error_status(e) in (403, 404):
+            log.info("position %s already closed", symbol)
+            return None
+        raise
     log.info("closed position %s", symbol)
     return result
+
+
+def wait_for_fill(order, timeout: float = FILL_POLL_SECONDS) -> float | None:
+    """Poll briefly for a market order's actual fill price.
+
+    Orders come back unfilled, so `filled_avg_price` is None on submit. Without
+    this the ledger records the signal-time bar close, which drifts badly on
+    wide-spread names — WETO logged a 53.17 entry against a 47.55 fill.
+    """
+    if order is None:
+        return None
+    price = getattr(order, "filled_avg_price", None)
+    if price:
+        return float(price)
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(FILL_POLL_INTERVAL)
+        try:
+            fresh = get_client().get_order_by_id(order.id)
+        except BrokerError as e:
+            log.debug("fill lookup for %s failed: %s", order.id, e)
+            return None
+        price = getattr(fresh, "filled_avg_price", None)
+        if price:
+            return float(price)
+    log.debug("order %s had no fill price after %.1fs", order.id, timeout)
+    return None
