@@ -252,6 +252,7 @@ def process_event(event: Event, judge: JudgeBase, news_client: NewsClient,
 def main():
     judge = create_judge()
     scanner = Scanner(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
+    scanner.load_state(SCANNER_FILE)
     news_client = NewsClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
 
     # Start news WebSocket stream

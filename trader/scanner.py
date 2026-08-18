@@ -1,6 +1,8 @@
 """Market scanner: polls Alpaca screener endpoints and maintains a dynamic watchlist."""
 
+import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -114,6 +116,33 @@ class Scanner:
             del self._watchlist[sym]
         if stale:
             log.info("pruned %d stale symbols: %s", len(stale), stale)
+
+    def load_state(self, path: str):
+        """Restore watchlist from a previous scanner.json, pruning stale entries."""
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        now = time.time()
+        loaded = 0
+        for entry in data.get("watchlist", []):
+            last_seen = entry.get("last_seen", 0)
+            if now - last_seen > config.SCANNER_ENTRY_TTL_SECONDS:
+                continue
+            symbol = entry["symbol"]
+            self._watchlist[symbol] = WatchlistEntry(
+                symbol=symbol,
+                source=entry.get("source", "scanner"),
+                added_at=entry.get("added_at", now),
+                last_seen=last_seen,
+                score=entry.get("score", 1.0),
+                headlines=entry.get("headlines", []),
+                scanner_meta=entry.get("scanner_meta", {}),
+            )
+            loaded += 1
+        if loaded:
+            log.info("restored %d watchlist entries from %s", loaded, path)
 
     def _add_or_refresh(self, symbol: str, source: str, meta: dict | None = None) -> bool:
         """Add symbol or refresh its timestamp. Returns True if newly added."""
