@@ -7,6 +7,7 @@ the main thread drains it and processes events sequentially.
 Run:  python -m trader.main
 """
 
+import csv
 import json
 import logging
 import os
@@ -35,8 +36,12 @@ logging.basicConfig(
 log = logging.getLogger("main")
 
 TRADES_FILE = os.path.join(config.LOG_DIR, "trades.jsonl")
+TRADES_CSV = os.path.join(config.LOG_DIR, "trades.csv")
 STATUS_FILE = os.path.join(config.LOG_DIR, "status.json")
 SCANNER_FILE = os.path.join(config.LOG_DIR, "scanner.json")
+
+CSV_FIELDS = ["timestamp", "symbol", "side", "qty", "notional", "price", "rule", "reason",
+              "confidence", "equity", "cash"]
 
 # Position symbols drop the slash: data/order "BTC/USD" ↔ position "BTCUSD"
 CRYPTO_BY_POS_SYMBOL = {s.replace("/", ""): s for s in config.CRYPTO_WATCHLIST}
@@ -94,11 +99,33 @@ def record(event: dict):
         f.write(json.dumps(event) + "\n")
 
 
+def record_trade(side: str, symbol: str, price, rule: str, account: dict | None = None,
+                 confidence: float = 0, reason: str = "", qty=None, notional=None):
+    write_header = not os.path.exists(TRADES_CSV)
+    with open(TRADES_CSV, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        if write_header:
+            w.writeheader()
+        w.writerow({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "side": side,
+            "qty": qty or "",
+            "notional": notional or "",
+            "price": price or "",
+            "rule": rule,
+            "reason": reason,
+            "confidence": confidence,
+            "equity": account.get("equity", "") if account else "",
+            "cash": account.get("cash", "") if account else "",
+        })
+
+
 # ---------------------------------------------------------------------------
 # Hard exits (stop-loss / take-profit) — unchanged from original
 # ---------------------------------------------------------------------------
 
-def check_hard_exits(positions: dict, stocks_open: bool):
+def check_hard_exits(positions: dict, stocks_open: bool, account: dict):
     for pos_symbol, pos in list(positions.items()):
         is_crypto = pos_symbol in CRYPTO_BY_POS_SYMBOL
         if not is_crypto and not stocks_open:
@@ -107,6 +134,8 @@ def check_hard_exits(positions: dict, stocks_open: bool):
         if reason:
             broker.close_position(pos_symbol)
             record({"event": "exit", "symbol": pos_symbol, "reason": reason, "position": pos})
+            record_trade("sell", pos_symbol, pos.get("current_price"), reason,
+                         account=account, qty=pos.get("qty"))
             del positions[pos_symbol]
 
 
@@ -137,6 +166,9 @@ def execute_if_approved(case: CaseFile, verdict: dict, positions: dict, account:
             broker.submit_crypto_order(symbol, "buy", notional)
             record({"event": "entry", "symbol": symbol, "notional": notional,
                     "price": sig.indicators.get("price"), "rule": sig.reason})
+            record_trade("buy", symbol, sig.indicators.get("price"), sig.reason,
+                         account=account, confidence=verdict["confidence"],
+                         reason=verdict["reason"], notional=notional)
         else:
             qty = risk.size_entry(account, positions, sig.indicators["price"])
             if qty is None:
@@ -144,11 +176,18 @@ def execute_if_approved(case: CaseFile, verdict: dict, positions: dict, account:
             broker.submit_market_order(symbol, "buy", qty)
             record({"event": "entry", "symbol": symbol, "qty": qty,
                     "price": sig.indicators["price"], "rule": sig.reason})
+            record_trade("buy", symbol, sig.indicators["price"], sig.reason,
+                         account=account, confidence=verdict["confidence"],
+                         reason=verdict["reason"], qty=qty)
         positions[pos_symbol] = {"qty": 0}
     else:
         broker.close_position(pos_symbol)
         record({"event": "exit", "symbol": symbol, "reason": f"signal: {sig.reason}",
                 "position": positions.get(pos_symbol)})
+        pos = positions.get(pos_symbol, {})
+        record_trade("sell", symbol, pos.get("current_price"), sig.reason,
+                     account=account, confidence=verdict["confidence"],
+                     reason=verdict["reason"], qty=pos.get("qty"))
         positions.pop(pos_symbol, None)
 
 
@@ -325,7 +364,7 @@ def main():
                 try:
                     account = broker.get_account()
                     positions = broker.get_positions()
-                    check_hard_exits(positions, stocks_open)
+                    check_hard_exits(positions, stocks_open, account)
                     tick_crypto(judge, news_client, scanner, account, positions)
                 except Exception:
                     log.exception("crypto tick failed")
@@ -336,7 +375,7 @@ def main():
                 try:
                     account = broker.get_account()
                     positions = broker.get_positions()
-                    check_hard_exits(positions, stocks_open)
+                    check_hard_exits(positions, stocks_open, account)
                     # Merge seed watchlist + scanner discoveries
                     dynamic = list(set(config.WATCHLIST + scanner.get_watchlist()))
                     tick_stocks(dynamic, judge, news_client, scanner, account, positions)
