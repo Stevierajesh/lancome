@@ -49,8 +49,13 @@
 
     <div class="col">
       <section>
-        <h2>Open Positions</h2>
+        <h2>
+          Open Positions
+          <span class="spacer"></span>
+          <button id="liquidate" class="danger" hidden>Sell all</button>
+        </h2>
         <div id="positions"></div>
+        <div id="liquidate-status"></div>
       </section>
 
       <section>
@@ -71,6 +76,7 @@
         <button data-event="exit">Exits</button>
         <button data-event="news">News</button>
         <button data-event="scanner">Scanner</button>
+        <button data-event="liquidate">Resets</button>
       </div>
       <select id="f-symbol"><option value="">All symbols</option></select>
       <select id="f-decision">

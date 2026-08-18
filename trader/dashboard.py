@@ -12,6 +12,7 @@ APIs:    /api/events    filtered/paginated event feed from logs/trades.jsonl
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -25,6 +26,20 @@ STATUS_FILE = os.path.join(config.LOG_DIR, "status.json")
 SCANNER_FILE = os.path.join(config.LOG_DIR, "scanner.json")
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+
+# Must be echoed back by the client to liquidate; guards the one mutating route.
+CONFIRM_TOKEN = "LIQUIDATE"
+
+
+def record_event(event: dict):
+    """Append to the same ledger the bot writes.
+
+    Single-line appends to a file opened O_APPEND don't interleave, so this is
+    safe to do while trader.main is running.
+    """
+    event["ts"] = datetime.now(timezone.utc).isoformat()
+    with open(TRADES_FILE, "a") as f:
+        f.write(json.dumps(event) + "\n")
 
 
 def load_events() -> list[dict]:
@@ -163,6 +178,48 @@ def api_news():
     if symbol:
         news = [e for e in news if e.get("symbol", "").upper() == symbol]
     return jsonify({"total": len(news), "events": news[:limit]})
+
+
+@app.post("/api/liquidate")
+def api_liquidate():
+    """Flatten the book. The one mutating route on this dashboard.
+
+    Requires an explicit confirmation token in the body so a stray fetch or a
+    mistyped curl can't flatten the account. Only reachable from localhost —
+    main() binds 127.0.0.1.
+    """
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirm") != CONFIRM_TOKEN:
+        return jsonify({"error": "confirmation required"}), 400
+
+    try:
+        before = broker.get_positions()
+    except Exception as e:
+        return jsonify({"error": f"cannot read positions: {e}"}), 502
+
+    if not before:
+        return jsonify({"closed": [], "count": 0, "message": "no open positions"})
+
+    try:
+        results = broker.close_all_positions(cancel_orders=True)
+    except Exception as e:
+        log.exception("liquidation failed")
+        return jsonify({"error": str(e)}), 502
+
+    failed = [r for r in results if not r["ok"]]
+    record_event({
+        "event": "liquidate",
+        "source": "dashboard",
+        "count": len(results),
+        "failed": [r["symbol"] for r in failed],
+        "positions": {s: {"qty": p["qty"], "unrealized_plpc": p["unrealized_plpc"]}
+                      for s, p in before.items()},
+    })
+    return jsonify({
+        "closed": results,
+        "count": len(results) - len(failed),
+        "failed": [r["symbol"] for r in failed],
+    })
 
 
 @app.get("/api/history")

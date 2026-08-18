@@ -110,6 +110,28 @@ def close_position(symbol: str):
     return result
 
 
+def close_all_positions(cancel_orders: bool = True) -> list[dict]:
+    """Liquidate the whole book. Manual reset switch — the bot never calls this.
+
+    Pending orders are cancelled first, otherwise a resting order can fill
+    straight back into a position you just flattened. Alpaca reports per-symbol
+    status rather than failing as a unit, so partial failures are returned to
+    the caller instead of raised.
+    """
+    results = get_client().close_all_positions(cancel_orders=cancel_orders)
+    out = []
+    for r in results or []:
+        status = getattr(r, "status", None)
+        out.append({
+            "symbol": getattr(r, "symbol", None),
+            "status": status,
+            "ok": status in (200, 201, 204),
+        })
+    closed = sum(1 for r in out if r["ok"])
+    log.info("liquidated %d/%d positions (orders cancelled=%s)", closed, len(out), cancel_orders)
+    return out
+
+
 def wait_for_fill(order, timeout: float = FILL_POLL_SECONDS) -> float | None:
     """Poll briefly for a market order's actual fill price.
 

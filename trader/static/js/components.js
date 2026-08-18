@@ -74,6 +74,15 @@ function eventBody(e) {
         chips: "",
       };
     }
+    case "liquidate": {
+      const symbols = Object.keys(e.positions || {});
+      return {
+        rule: `Sold all — ${e.count} position${e.count === 1 ? "" : "s"} closed`,
+        note: [symbols.join(", "), e.failed?.length ? `failed: ${e.failed.join(", ")}` : ""]
+          .filter(Boolean).map(esc).join(" · "),
+        chips: "",
+      };
+    }
     case "scanner": {
       const meta = e.scanner_meta || {};
       const bits = {};

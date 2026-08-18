@@ -91,6 +91,74 @@ async function loadSummary() {
     ]);
 
   $("positions").innerHTML = positionsTable(s.positions);
+
+  // Only offer the reset when there's something to flatten.
+  const btn = $("liquidate");
+  btn.hidden = nPos === 0;
+  if (nPos === 0) disarmLiquidate();
+}
+
+/* ----------------------------------------------------------- liquidate ("sell all")
+
+   Two-step: the first click arms the button, the second sends it. Arming lapses
+   so a stray click can't sit primed waiting for the next one — but the window
+   has to outlast reading the warning, or it disarms under you mid-sentence. */
+
+const ARM_WINDOW_MS = 15000;
+
+let armed = false, armTimer;
+
+function disarmLiquidate() {
+  armed = false;
+  clearTimeout(armTimer);
+  const btn = $("liquidate");
+  btn.classList.remove("armed");
+  btn.textContent = "Sell all";
+}
+
+function setStatus(text, kind = "") {
+  $("liquidate-status").innerHTML = text ? `<span class="${kind}">${text}</span>` : "";
+}
+
+async function liquidate() {
+  const btn = $("liquidate");
+
+  if (!armed) {
+    armed = true;
+    btn.classList.add("armed");
+    btn.textContent = "Confirm — sell all?";
+    setStatus("Closes every open position at market and cancels resting orders. " +
+              "The bot keeps trading and may re-enter on its next tick.", "warn");
+    armTimer = setTimeout(() => { disarmLiquidate(); setStatus(""); }, ARM_WINDOW_MS);
+    return;
+  }
+
+  clearTimeout(armTimer);
+  btn.disabled = true;
+  btn.textContent = "Selling…";
+  setStatus("");
+
+  try {
+    const r = await fetch("/api/liquidate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "LIQUIDATE" }),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      setStatus(`Failed: ${d.error || r.status}`, "err");
+    } else if (d.failed?.length) {
+      setStatus(`Closed ${d.count}, failed on ${d.failed.join(", ")}`, "err");
+    } else {
+      setStatus(d.message || `Closed ${d.count} position${d.count === 1 ? "" : "s"}.`, "done");
+    }
+  } catch (e) {
+    setStatus(`Failed: ${e.message}`, "err");
+  } finally {
+    btn.disabled = false;
+    disarmLiquidate();
+    refreshAll();
+  }
 }
 
 async function loadHistory() {
@@ -263,6 +331,7 @@ $("pg-next").addEventListener("click", () => {
 });
 
 $("history-period").addEventListener("change", loadHistory);
+$("liquidate").addEventListener("click", liquidate);
 
 /* Click a clamped judge reason to expand it in place. */
 $("events").addEventListener("click", (e) => {

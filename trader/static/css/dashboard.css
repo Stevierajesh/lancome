@@ -163,6 +163,33 @@ td {
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: var(--panel2); }
 
+/* --------------------------------------------------------- destructive action */
+
+button.danger {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  font: 11px var(--sans);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+button.danger:hover { border-color: var(--red); color: var(--red); }
+button.danger.armed {
+  background: rgba(232,99,95,0.14);
+  border-color: var(--red);
+  color: var(--red);
+  font-weight: 600;
+}
+button.danger:disabled { opacity: 0.5; cursor: default; }
+
+#liquidate-status { font-size: 12px; margin-top: 8px; }
+#liquidate-status .warn { color: var(--amber); }
+#liquidate-status .done { color: var(--green); }
+#liquidate-status .err  { color: var(--red); }
+
 /* ------------------------------------------------------------------- badges */
 
 .badge {
@@ -180,6 +207,7 @@ tbody tr:hover td { background: var(--panel2); }
 .badge--news                     { background: rgba(179,157,219,0.14); color: var(--purple); }
 .badge--scanner, .badge--both    { background: rgba(77,208,225,0.14);  color: var(--cyan); }
 .badge--veto                     { background: rgba(224,174,74,0.14);  color: var(--amber); }
+.badge--liquidate                { background: rgba(232,99,95,0.2);    color: var(--red); }
 
 .side {
   font: 600 10px/1.5 var(--mono);
