@@ -53,3 +53,5 @@ def test_prompt_includes_run_context_without_overriding_risk(account):
     assert "Run context:" in prompt
     assert '"target_equity": 125000.0' in prompt
     assert "Never approve solely because a target exists" in prompt
+    assert "plausible short-term edge" in prompt
+    assert "Do not approve merely because no single fatal flaw is present" in prompt

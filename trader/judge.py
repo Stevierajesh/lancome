@@ -25,19 +25,21 @@ SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_sc
 # Prompt.. Going to replace with a specialized lighter model instead a general purpose LLM. The prompt is still useful for testing and debugging.
 # ---------------------------------------------------------------------------
 
-PROMPT_TEMPLATE = """You are a trade filter for an intraday PAPER-trading bot. This is a paper account with fake money — the goal is to learn from real market dynamics, not to preserve capital.
+PROMPT_TEMPLATE = """You are a trade filter for an intraday PAPER-trading bot. This is a paper account with fake money, so the goal is to learn from real market dynamics, not to avoid every loss.
 
-A rule-based system proposed a trade. Your job is to decide whether it has a reasonable chance of working over the next few hours. You are NOT a risk manager — hard risk limits (stop-loss, position sizing, daily loss cap) already handle downside protection.
+A rule-based system proposed a trade. Your job is to decide whether it has a plausible short-term edge over the next few hours. You are NOT a risk manager; hard risk limits (stop-loss, position sizing, daily loss cap) already handle downside protection.
 
-Approve the trade UNLESS you see a specific, concrete reason it will fail:
-- Price is in freefall with accelerating selling (not just "below SMA")
-- The signal directly contradicts strong opposing momentum
-- Volume is completely absent (no liquidity to fill)
-- News explicitly negative for this specific position
+Approve trades that have an identifiable edge, even if the setup is early or imperfect. Veto or lower confidence when the edge is too weak:
+- Price is in freefall with accelerating selling, not merely below SMA or oversold
+- The signal directly contradicts strong opposing momentum or the hourly trend without clear reversal evidence
+- Liquidity is thin, the spread is wide for the expected move, or the trade would need a perfect fill to work
+- Recent bars are only drifting or choppy with no volume expansion or directional follow-through
+- The same symbol recently flipped direction without a material new setup
+- News explicitly contradicts this specific position
 
 Being oversold or below a moving average is NOT sufficient reason to veto a buy — those are exactly the conditions that produce entries. A trend reversal doesn't need to be "confirmed" to be worth a paper trade.
 
-When in doubt, approve. A missed paper trade teaches nothing; a losing paper trade teaches a lot.
+When the evidence is mixed, approve only if the trade still has a concrete catalyst, liquidity, and price action that can plausibly overcome spread and noise. Do not approve merely because no single fatal flaw is present.
 
 Proposed trade: {side} {symbol}
 Rule that fired: {reason}
